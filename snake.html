@@ -53,7 +53,6 @@
       display: none;
     }
 
-    /* Boutons directionnels */
     #dpad {
       margin-top: 16px;
       display: grid;
@@ -78,6 +77,129 @@
     }
     .btn-dir:active { background: rgba(0, 212, 170, 0.4); }
     .btn-empty { visibility: hidden; }
+
+    /* Bouton classement */
+    #leaderboard-btn {
+      margin-top: 10px;
+      padding: 8px 20px;
+      background: transparent;
+      border: 2px solid #00d4aa;
+      border-radius: 6px;
+      color: #00d4aa;
+      font-size: 0.9rem;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+
+    /* Modal classement */
+    #modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 10;
+      align-items: center;
+      justify-content: center;
+    }
+    #modal-overlay.visible { display: flex; }
+    #modal {
+      background: #16213e;
+      border: 2px solid #00d4aa;
+      border-radius: 12px;
+      padding: 24px 28px;
+      min-width: 280px;
+      max-width: 90vw;
+      box-shadow: 0 0 40px rgba(0,212,170,0.3);
+    }
+    #modal h2 { color: #00d4aa; text-align: center; margin-bottom: 16px; letter-spacing: 2px; }
+    #leaderboard-list { list-style: none; }
+    #leaderboard-list li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      font-size: 1rem;
+    }
+    #leaderboard-list li:last-child { border-bottom: none; }
+    .rank {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 0.85rem;
+      flex-shrink: 0;
+    }
+    .rank-1 { background: #ffd700; color: #1a1a2e; }
+    .rank-2 { background: #c0c0c0; color: #1a1a2e; }
+    .rank-3 { background: #cd7f32; color: #1a1a2e; }
+    .rank-other { background: rgba(255,255,255,0.1); color: #aaa; }
+    .lb-name { flex: 1; }
+    .lb-score { color: #00d4aa; font-weight: bold; }
+    .lb-empty { text-align: center; color: #555; padding: 20px 0; }
+    #modal-close {
+      margin-top: 16px;
+      width: 100%;
+      padding: 10px;
+      background: #00d4aa;
+      border: none;
+      border-radius: 6px;
+      color: #1a1a2e;
+      font-size: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    /* Modal saisie nom */
+    #name-modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.75);
+      z-index: 20;
+      align-items: center;
+      justify-content: center;
+    }
+    #name-modal-overlay.visible { display: flex; }
+    #name-modal {
+      background: #16213e;
+      border: 2px solid #ff4d6d;
+      border-radius: 12px;
+      padding: 24px 28px;
+      min-width: 280px;
+      max-width: 90vw;
+      text-align: center;
+      box-shadow: 0 0 40px rgba(255,77,109,0.3);
+    }
+    #name-modal h2 { color: #ff4d6d; margin-bottom: 6px; }
+    #name-modal p { color: #aaa; font-size: 0.9rem; margin-bottom: 16px; }
+    #name-input {
+      width: 100%;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.07);
+      border: 2px solid #00d4aa;
+      border-radius: 6px;
+      color: #eee;
+      font-size: 1rem;
+      text-align: center;
+      outline: none;
+      margin-bottom: 14px;
+    }
+    #name-input:focus { border-color: #00ffcc; }
+    #name-submit {
+      width: 100%;
+      padding: 10px;
+      background: #00d4aa;
+      border: none;
+      border-radius: 6px;
+      color: #1a1a2e;
+      font-size: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -89,6 +211,7 @@
   <canvas id="game"></canvas>
   <div id="message">Appuie sur Play pour commencer</div>
   <button id="restart-btn" onclick="startGame()">Rejouer</button>
+  <button id="leaderboard-btn" onclick="showLeaderboard()">Classement</button>
 
   <div id="dpad">
     <div class="btn-empty"></div>
@@ -102,11 +225,29 @@
     <div class="btn-empty"></div>
   </div>
 
+  <!-- Modal classement -->
+  <div id="modal-overlay" onclick="if(e.target===this)hideLeaderboard()">
+    <div id="modal">
+      <h2>CLASSEMENT</h2>
+      <ul id="leaderboard-list"></ul>
+      <button id="modal-close" onclick="hideLeaderboard()">Fermer</button>
+    </div>
+  </div>
+
+  <!-- Modal saisie nom -->
+  <div id="name-modal-overlay">
+    <div id="name-modal">
+      <h2>Game Over</h2>
+      <p id="name-modal-msg">Ton score : <strong id="name-modal-score"></strong></p>
+      <input id="name-input" type="text" maxlength="12" placeholder="Ton pseudo" autocomplete="off">
+      <button id="name-submit" onclick="submitScore()">Enregistrer</button>
+    </div>
+  </div>
+
   <script>
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
 
-    // Taille responsive
     const size = Math.min(window.innerWidth - 20, window.innerHeight - 280, 360);
     canvas.width = size;
     canvas.height = size;
@@ -117,6 +258,26 @@
 
     let snake, dir, nextDir, food, score, best = 0, loop, started, dead;
 
+    // Classement : top 10 dans localStorage
+    function getScores() {
+      try { return JSON.parse(localStorage.getItem('snake_scores') || '[]'); }
+      catch { return []; }
+    }
+    function saveScores(scores) {
+      localStorage.setItem('snake_scores', JSON.stringify(scores));
+    }
+    function addScore(name, s) {
+      const scores = getScores();
+      scores.push({ name: name.trim() || 'Anonyme', score: s });
+      scores.sort((a, b) => b.score - a.score);
+      scores.splice(10); // garde top 10
+      saveScores(scores);
+    }
+    function getBest() {
+      const scores = getScores();
+      return scores.length ? scores[0].score : 0;
+    }
+
     function init() {
       const mx = Math.floor(COLS / 2);
       const my = Math.floor(ROWS / 2);
@@ -126,6 +287,7 @@
       score = 0;
       dead = false;
       started = false;
+      best = getBest();
       placeFood();
       updateScore();
       draw();
@@ -171,16 +333,72 @@
       clearInterval(loop);
       dead = true;
       draw();
+      document.getElementById('btn-start').textContent = '▶';
+      // Demander le nom si score > 0
+      if (score > 0) {
+        document.getElementById('name-modal-score').textContent = score;
+        document.getElementById('name-input').value = '';
+        document.getElementById('name-modal-overlay').classList.add('visible');
+        setTimeout(() => document.getElementById('name-input').focus(), 100);
+      } else {
+        document.getElementById('message').textContent = 'Game Over ! Score : ' + score;
+        document.getElementById('message').className = 'game-over';
+        document.getElementById('restart-btn').style.display = 'inline-block';
+      }
+    }
+
+    function submitScore() {
+      const name = document.getElementById('name-input').value;
+      addScore(name, score);
+      best = getBest();
+      updateScore();
+      document.getElementById('name-modal-overlay').classList.remove('visible');
       document.getElementById('message').textContent = 'Game Over ! Score : ' + score;
       document.getElementById('message').className = 'game-over';
       document.getElementById('restart-btn').style.display = 'inline-block';
-      document.getElementById('btn-start').textContent = '▶';
     }
+
+    document.getElementById('name-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') submitScore();
+    });
 
     function updateScore() {
       document.getElementById('score').textContent = score;
       document.getElementById('best').textContent = best;
     }
+
+    function showLeaderboard() {
+      const scores = getScores();
+      const list = document.getElementById('leaderboard-list');
+      list.innerHTML = '';
+      if (scores.length === 0) {
+        list.innerHTML = '<li class="lb-empty">Aucun score encore !</li>';
+      } else {
+        scores.forEach((entry, i) => {
+          const li = document.createElement('li');
+          const rankClass = i === 0 ? 'rank-1' : i === 1 ? 'rank-2' : i === 2 ? 'rank-3' : 'rank-other';
+          li.innerHTML = `
+            <div class="rank ${rankClass}">${i + 1}</div>
+            <span class="lb-name">${escapeHtml(entry.name)}</span>
+            <span class="lb-score">${entry.score}</span>
+          `;
+          list.appendChild(li);
+        });
+      }
+      document.getElementById('modal-overlay').classList.add('visible');
+    }
+
+    function hideLeaderboard() {
+      document.getElementById('modal-overlay').classList.remove('visible');
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    document.getElementById('modal-overlay').addEventListener('click', function(e) {
+      if (e.target === this) hideLeaderboard();
+    });
 
     function roundRect(x, y, w, h, r) {
       ctx.beginPath();
@@ -243,7 +461,6 @@
       });
     }
 
-    // Swipe touch
     let touchStartX = 0, touchStartY = 0;
     canvas.addEventListener('touchstart', e => {
       touchStartX = e.touches[0].clientX;
@@ -263,7 +480,6 @@
       if (newDir.x !== -dir.x || newDir.y !== -dir.y) nextDir = newDir;
     }, { passive: true });
 
-    // Boutons D-pad
     function setDir(d) {
       if (!started || dead) { startGame(); return; }
       if (d.x !== -dir.x || d.y !== -dir.y) nextDir = d;
@@ -277,7 +493,6 @@
     document.getElementById('btn-left').addEventListener('click', () => setDir({x:-1,y:0}));
     document.getElementById('btn-right').addEventListener('click', () => setDir({x:1,y:0}));
 
-    // Clavier
     document.addEventListener('keydown', e => {
       const keys = {
         ArrowUp:{x:0,y:-1}, ArrowDown:{x:0,y:1},
