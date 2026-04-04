@@ -1,0 +1,13 @@
+# Standard ignore patterns
+.gcloudignore
+.git
+.gitignore
+
+# Node development artifacts
+node_modules/
+npm-debug.log
+*.log
+
+# Misc
+README.md
+.env
