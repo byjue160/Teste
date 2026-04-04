@@ -15,6 +15,8 @@ const TICK_MS = 100;           // 10 ticks/sec
 const ZONE_SHRINK_INTERVAL = 30000; // 30 s
 const RESPAWN_DELAY = 3000;
 const START_HALF = 2;          // half-size of starting 5×5 territory
+const SPAWN_INVINCIBILITY_MS = 3000; // 3 s spawn protection
+const MIN_TRAIL_FOR_SELF_KILL = 5;   // trail must be ≥5 cells before self-collision kills
 
 const TEAMS = {
   1: { name: 'Red',   color: '#e74c3c' },
@@ -48,7 +50,8 @@ let dirtySet = new Set();
 
 let zone = { cx: GRID_SIZE / 2, cy: GRID_SIZE / 2, radius: ZONE_PHASES[0] };
 let zonePhaseIdx = 0;
-let nextShrinkAt = Date.now() + ZONE_SHRINK_INTERVAL;
+let nextShrinkAt = null;   // null = zone not yet started
+let gameStartedAt = null;  // set when first player joins
 
 let players = {};    // socketId → player
 let eloStore = {};   // name → ELO (persists across respawns)
@@ -69,7 +72,8 @@ function setCell(x, y, team) {
 }
 
 function isInZone(x, y) {
-  if (zone.radius <= 0) return false;
+  // Radius 0 means fully collapsed – treat as safe to avoid infinite death loop
+  if (zone.radius <= 0) return true;
   const dx = (x + 0.5) - zone.cx;
   const dy = (y + 0.5) - zone.cy;
   return dx * dx + dy * dy <= zone.radius * zone.radius;
@@ -90,8 +94,29 @@ function assignTeam() {
 function getSpawnPos(team) {
   const anchor = SPAWN_ANCHORS[team] || { x: 50, y: 50 };
   const jitter = () => Math.floor(Math.random() * 10) - 5;
-  const x = Math.min(GRID_SIZE - START_HALF - 2, Math.max(START_HALF + 1, anchor.x + jitter()));
-  const y = Math.min(GRID_SIZE - START_HALF - 2, Math.max(START_HALF + 1, anchor.y + jitter()));
+  let x = anchor.x + jitter();
+  let y = anchor.y + jitter();
+
+  // Keep a safe margin inside the zone so the starting 5×5 block fits entirely
+  const safeRadius = Math.max(0, zone.radius - START_HALF - 2);
+  if (safeRadius > 0) {
+    const dx = (x + 0.5) - zone.cx;
+    const dy = (y + 0.5) - zone.cy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > safeRadius) {
+      // Project back onto the safe circle
+      const scale = safeRadius / dist;
+      x = Math.round(zone.cx + dx * scale - 0.5);
+      y = Math.round(zone.cy + dy * scale - 0.5);
+    }
+  } else {
+    // Zone is tiny – spawn at center
+    x = Math.round(zone.cx);
+    y = Math.round(zone.cy);
+  }
+
+  x = Math.min(GRID_SIZE - START_HALF - 2, Math.max(START_HALF + 1, x));
+  y = Math.min(GRID_SIZE - START_HALF - 2, Math.max(START_HALF + 1, y));
   return { x, y };
 }
 
@@ -112,6 +137,7 @@ function spawnPlayer(player) {
   player.trail = [];
   player.inTerritory = true;
   player.alive = true;
+  player.spawnedAt = Date.now(); // spawn-protection timestamp
   giveStartingTerritory(player);
 }
 
@@ -225,14 +251,58 @@ function killPlayer(player, killer) {
   }, RESPAWN_DELAY);
 }
 
+// ─── Zone shrink (called from gameTick) ──────────────────────────────────────
+function tryShrinkZone() {
+  const now = Date.now();
+
+  // Don't shrink if zone timer hasn't started yet
+  if (nextShrinkAt === null) return;
+  if (now < nextShrinkAt) return;
+
+  // Require at least 2 alive players
+  const alive = Object.values(players).filter(p => p.alive).length;
+  if (alive < 2) {
+    // Delay the timer – wait for more players
+    nextShrinkAt = now + ZONE_SHRINK_INTERVAL;
+    io.emit('zoneUpdate', { zone, timeToShrink: ZONE_SHRINK_INTERVAL });
+    return;
+  }
+
+  // Require 30 s to have elapsed since the game started
+  if (!gameStartedAt || now - gameStartedAt < ZONE_SHRINK_INTERVAL) {
+    nextShrinkAt = now + ZONE_SHRINK_INTERVAL;
+    io.emit('zoneUpdate', { zone, timeToShrink: ZONE_SHRINK_INTERVAL });
+    return;
+  }
+
+  // Advance zone phase
+  zonePhaseIdx = Math.min(zonePhaseIdx + 1, ZONE_PHASES.length - 1);
+  zone.radius = ZONE_PHASES[zonePhaseIdx];
+  nextShrinkAt = now + ZONE_SHRINK_INTERVAL;
+
+  // Kill players outside the new zone (skip invincible ones)
+  for (const p of Object.values(players)) {
+    if (p.alive && !isProtected(p) && !isInZone(p.x, p.y)) killPlayer(p, null);
+  }
+
+  io.emit('zoneUpdate', { zone, timeToShrink: ZONE_SHRINK_INTERVAL });
+}
+
+function isProtected(player) {
+  return Date.now() - player.spawnedAt < SPAWN_INVINCIBILITY_MS;
+}
+
 // ─── Game tick ────────────────────────────────────────────────────────────────
 function gameTick() {
   dirtySet.clear();
+  tryShrinkZone();
 
   const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
   for (const player of Object.values(players)) {
     if (!player.alive) continue;
+
+    const invincible = isProtected(player);
 
     // Apply queued direction (disallow 180°)
     if (player.nextDir !== OPPOSITE[player.direction]) {
@@ -246,26 +316,27 @@ function gameTick() {
     if (player.direction === 'left')  nx--;
     if (player.direction === 'right') nx++;
 
-    // Wall death
+    // Wall death (invincibility doesn't protect against walls)
     if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) {
+      if (!invincible) killPlayer(player, null);
+      continue;
+    }
+
+    // Zone death (skip if invincible)
+    if (!invincible && !isInZone(nx, ny)) {
       killPlayer(player, null);
       continue;
     }
 
-    // Zone death
-    if (!isInZone(nx, ny)) {
-      killPlayer(player, null);
-      continue;
+    // Self-trail death: only when trail is long enough and not invincible
+    if (!invincible && player.trail.length >= MIN_TRAIL_FOR_SELF_KILL) {
+      if (player.trail.some(c => c.x === nx && c.y === ny)) {
+        killPlayer(player, null);
+        continue;
+      }
     }
 
-    // Self-trail death
-    if (player.trail.some(c => c.x === nx && c.y === ny)) {
-      killPlayer(player, null);
-      continue;
-    }
-
-    // Enemy-trail death (check if we hit another player's trail)
-    let hitEnemy = false;
+    // Enemy-trail: cutting another player's trail kills them (not us)
     for (const other of Object.values(players)) {
       if (other.id === player.id || !other.alive || other.team === player.team) continue;
       if (other.trail.some(c => c.x === nx && c.y === ny)) {
@@ -292,12 +363,14 @@ function gameTick() {
         player.trail.push({ x: nx, y: ny });
       }
 
-      // Check if an enemy's head just landed on our freshly added trail cell
-      for (const other of Object.values(players)) {
-        if (other.id === player.id || !other.alive || other.team === player.team) continue;
-        if (other.x === nx && other.y === ny) {
-          killPlayer(player, other);
-          break;
+      // Check if an enemy's head is on our freshly added trail cell
+      if (!invincible) {
+        for (const other of Object.values(players)) {
+          if (other.id === player.id || !other.alive || other.team === player.team) continue;
+          if (other.x === nx && other.y === ny) {
+            killPlayer(player, other);
+            break;
+          }
         }
       }
     }
@@ -326,22 +399,8 @@ function gameTick() {
     players: pStates,
     dirty,
     zone,
-    timeToShrink: Math.max(0, nextShrinkAt - Date.now()),
+    timeToShrink: nextShrinkAt ? Math.max(0, nextShrinkAt - Date.now()) : ZONE_SHRINK_INTERVAL,
   });
-}
-
-// ─── Zone shrink ──────────────────────────────────────────────────────────────
-function shrinkZone() {
-  zonePhaseIdx = Math.min(zonePhaseIdx + 1, ZONE_PHASES.length - 1);
-  zone.radius = ZONE_PHASES[zonePhaseIdx];
-  nextShrinkAt = Date.now() + ZONE_SHRINK_INTERVAL;
-
-  // Kill everyone outside
-  for (const p of Object.values(players)) {
-    if (p.alive && !isInZone(p.x, p.y)) killPlayer(p, null);
-  }
-
-  io.emit('zoneUpdate', { zone, timeToShrink: ZONE_SHRINK_INTERVAL });
 }
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
@@ -369,6 +428,12 @@ io.on('connection', (socket) => {
     players[socket.id] = player;
     spawnPlayer(player);
 
+    // Start zone timer on first player join
+    if (!gameStartedAt) {
+      gameStartedAt = Date.now();
+      nextShrinkAt = gameStartedAt + ZONE_SHRINK_INTERVAL;
+    }
+
     // Full initial state
     socket.emit('init', {
       playerId: socket.id,
@@ -383,7 +448,7 @@ io.on('connection', (socket) => {
         }])
       ),
       zone,
-      timeToShrink: Math.max(0, nextShrinkAt - Date.now()),
+      timeToShrink: nextShrinkAt ? Math.max(0, nextShrinkAt - Date.now()) : ZONE_SHRINK_INTERVAL,
     });
 
     socket.broadcast.emit('playerJoined', {
@@ -427,7 +492,7 @@ io.on('connection', (socket) => {
 
 // ─── Start loops ──────────────────────────────────────────────────────────────
 setInterval(gameTick, TICK_MS);
-setInterval(shrinkZone, ZONE_SHRINK_INTERVAL);
+// Zone shrink is now driven from gameTick → tryShrinkZone()
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
