@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Zone.io — Territory Battle Royale</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ── Login Screen ─────────────────────────────────────────────────────── -->
+  <div id="loginScreen" class="screen active">
+    <div class="login-box">
+      <h1 class="logo">ZONE<span>.io</span></h1>
+      <p class="tagline">Territory · Battle Royale · 2v2</p>
+
+      <div class="team-strip">
+        <span class="tbadge t1">RED</span>
+        <span class="tbadge t2">BLUE</span>
+        <span class="tbadge t3">GREEN</span>
+        <span class="tbadge t4">GOLD</span>
+      </div>
+
+      <div class="input-row">
+        <input id="nameInput" type="text" maxlength="15"
+               placeholder="Your name…" autocomplete="off" spellcheck="false">
+        <button id="playBtn">PLAY</button>
+      </div>
+
+      <div class="howto">
+        <h3>How to Play</h3>
+        <ul>
+          <li><kbd>W A S D</kbd> or <kbd>↑ ← ↓ →</kbd> to move</li>
+          <li>Venture outside your territory to draw a <em>trail</em></li>
+          <li>Return home to <em>capture</em> the enclosed area</li>
+          <li>Cut an enemy's trail to <em>eliminate</em> them</li>
+          <li>Stay inside the shrinking safe zone</li>
+          <li>Teammates share territory — protect each other!</li>
+          <li>Kill <span class="pos">+25 ELO</span> · Die <span class="neg">−20 ELO</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Game Screen ──────────────────────────────────────────────────────── -->
+  <div id="gameScreen" class="screen">
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Top-left HUD -->
+    <div class="hud hud-left">
+      <div class="hud-pill elo-pill" id="eloDisplay">ELO: 1000</div>
+      <div class="hud-pill team-pill" id="teamDisplay">Team: —</div>
+    </div>
+
+    <!-- Top-center zone timer -->
+    <div class="zone-banner" id="zoneBanner">
+      <span class="zone-icon">⬤</span>
+      <span id="zoneTimerLabel">Safe zone closes in <strong id="zoneTimerVal">30</strong>s</span>
+    </div>
+
+    <!-- Leaderboard (right) -->
+    <div class="leaderboard" id="leaderboard">
+      <div class="lb-head">Leaderboard</div>
+      <div id="lbRows"></div>
+    </div>
+
+    <!-- Death overlay -->
+    <div id="deathOverlay" class="overlay hidden">
+      <div class="overlay-box">
+        <div class="skull">☠</div>
+        <h2>YOU DIED</h2>
+        <p id="deathMsg"></p>
+        <div class="spinner"></div>
+        <p class="respawn-txt">Respawning in 3s…</p>
+      </div>
+    </div>
+
+    <!-- Mobile d-pad -->
+    <div class="dpad" id="dpad">
+      <button class="dp-btn dp-up"    data-dir="up">▲</button>
+      <button class="dp-btn dp-left"  data-dir="left">◄</button>
+      <button class="dp-btn dp-down"  data-dir="down">▼</button>
+      <button class="dp-btn dp-right" data-dir="right">►</button>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
