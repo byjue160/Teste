@@ -39,3 +39,8 @@
 
 # debug information files
 *.dwo
+
+# Node.js
+node_modules/
+npm-debug.log
+.env
