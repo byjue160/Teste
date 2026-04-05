@@ -175,6 +175,24 @@ kbd {
 .lobby-header .back-btn { position: absolute; left: 0; top: 0; }
 .lobby-title { font-size: 24px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; }
 .lobby-subtitle { font-size: 13px; color: #7f8aaa; }
+.lobby-countdown {
+  font-size: 18px; font-weight: 700; color: #2ecc71;
+  min-height: 26px; text-align: center; letter-spacing: 1px;
+  animation: pulse-green 1s ease-in-out infinite;
+}
+@keyframes pulse-green {
+  0%,100% { opacity: 1; } 50% { opacity: 0.6; }
+}
+/* Solo lobby panel */
+.lobby-solo-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+  width: 100%; max-width: 340px;
+}
+.lobby-solo-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #3498db; display: inline-block; flex-shrink: 0;
+}
 
 /* Team columns */
 .lobby-teams {
@@ -280,15 +298,6 @@ kbd {
 }
 .mode-hud-badge.ranked { background: rgba(243,156,18,0.2); color: #f39c12; border: 1px solid #f39c1255; }
 .mode-hud-badge.chill  { background: rgba(46,204,113,0.2); color: #2ecc71; border: 1px solid #2ecc7155; }
-
-.zone-banner {
-  position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-  background: rgba(0,0,0,0.7); border: 1px solid rgba(231,76,60,0.4);
-  border-radius: 20px; padding: 6px 16px; font-size: 13px; color: #eee;
-  pointer-events: none; backdrop-filter: blur(6px); white-space: nowrap;
-}
-.zone-dot { color: #e74c3c; margin-right: 6px; }
-.zone-banner strong { color: #e74c3c; }
 
 /* Leaderboard */
 .leaderboard {

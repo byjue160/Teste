@@ -49,12 +49,9 @@ let selectedColor = SOLO_COLORS[0].hex; // default: Rouge
 let myId     = null;
 let players  = {};
 let grid     = null;
-let gridSize = 100;
-let zone     = { cx: 50, cy: 50, radius: 70 };
+let gridSize = 200;
 let isRanked = true;
 let isTeam   = false;
-let zoneCountdown  = 30;
-let zoneIntervalId = null;
 
 // ─── Spectate state ───────────────────────────────────────────────────────────
 let isSpectating = false;
@@ -129,7 +126,6 @@ const colorPalette  = document.getElementById('colorPalette');
 const eloDisplay    = document.getElementById('eloDisplay');
 const teamDisplay   = document.getElementById('teamDisplay');
 const modeBadge     = document.getElementById('modeBadge');
-const zoneTimerVal  = document.getElementById('zoneTimerVal');
 const lbRows        = document.getElementById('lbRows');
 const deathOverlay  = document.getElementById('deathOverlay');
 const deathMsg      = document.getElementById('deathMsg');
@@ -138,10 +134,12 @@ const lobbyTitle    = document.getElementById('lobbyTitle');
 const lobbySubtitle = document.getElementById('lobbySubtitle');
 const lobbyStatus   = document.getElementById('lobbyStatus');
 const readyBtn      = document.getElementById('readyBtn');
-let playerReady     = false;
-let myLobbyTeam     = null; // 1–4 or null
-let playerName      = '';
-let pendingRanked   = true; // ranked flag when entering lobby
+let playerReady       = false;
+let myLobbyTeam       = null; // 1–4 or null (team mode only)
+let playerName        = '';
+let pendingRanked     = true;   // ranked flag when entering lobby
+let lobbyIsTeam       = false;  // current lobby mode
+let lobbyCountdownId  = null;   // setInterval for local countdown display
 
 // ─── Colour picker setup ──────────────────────────────────────────────────────
 (function buildPalette() {
@@ -188,20 +186,17 @@ document.querySelectorAll('.mode-card').forEach(card => {
     const mode   = card.dataset.mode;
     const ranked = card.dataset.ranked === 'true';
     lastMode = { mode, ranked, color: selectedColor };
-    if (mode === 'solo') {
-      socket.emit('join', { name: playerName, mode: 'solo', ranked, color: selectedColor });
-    } else {
-      // Team → lobby
-      pendingRanked = ranked;
-      socket.emit('joinLobby', { name: playerName, ranked });
-    }
+    pendingRanked = ranked;
+    // All modes go through the lobby now
+    socket.emit('joinLobby', { name: playerName, mode, ranked, color: selectedColor });
   });
 });
 
 // ─── Lobby back ───────────────────────────────────────────────────────────────
 lobbyBackBtn.addEventListener('click', () => {
-  socket.emit('leaveLobby');   // best-effort
-  myLobbyTeam = null; playerReady = false;
+  socket.emit('leaveLobby');
+  myLobbyTeam = null; playerReady = false; lobbyIsTeam = false;
+  stopLobbyCountdown();
   showScreen('modeScreen');
 });
 
@@ -236,56 +231,112 @@ const TEAM_DEF_CLIENT = {
   4: { name: 'Gold',  color: '#f1c40f' },
 };
 
-function renderLobby(teams) {
-  for (let t = 1; t <= 4; t++) {
-    const members  = teams[t] || [];
-    const countEl  = document.getElementById(`lobbyCount${t}`);
-    const listEl   = document.getElementById(`lobbyMembers${t}`);
-    const joinBtn  = document.querySelector(`.lobby-join-btn[data-team="${t}"]`);
-    const colEl    = document.getElementById(`lobbyTeamCol${t}`);
+const lobbyTeamCols  = document.getElementById('lobbyTeamCols');
+const lobbySoloPanel = document.getElementById('lobbySoloPanel');
+const lobbySoloList  = document.getElementById('lobbySoloList');
+const lobbyCountdown = document.getElementById('lobbyCountdown');
 
-    if (countEl) countEl.textContent = `${members.length}/2`;
+function startLobbyCountdown(ms) {
+  clearInterval(lobbyCountdownId);
+  let secs = Math.ceil(ms / 1000);
+  const update = () => {
+    if (lobbyCountdown) lobbyCountdown.textContent = secs > 0 ? `Starting in ${secs}s…` : 'Starting…';
+    if (secs <= 0) { clearInterval(lobbyCountdownId); lobbyCountdownId = null; }
+    secs--;
+  };
+  update();
+  lobbyCountdownId = setInterval(update, 1000);
+}
 
-    if (listEl) {
-      listEl.innerHTML = members.map(m => `
-        <li class="lobby-member-item${m.id === myId ? ' is-me' : ''}">
-          <span class="lobby-member-dot" style="background:${TEAM_DEF_CLIENT[t].color}"></span>
-          <span>${esc(m.name)}${m.id === myId ? ' (you)' : ''}</span>
-          <span class="lobby-member-check ${m.ready ? 'ready' : 'not-ready'}">${m.ready ? '✓' : '○'}</span>
-        </li>`).join('');
-    }
+function stopLobbyCountdown() {
+  clearInterval(lobbyCountdownId);
+  lobbyCountdownId = null;
+  if (lobbyCountdown) lobbyCountdown.textContent = '';
+}
 
-    const full = members.length >= 2;
-    const isMyTeam = t === myLobbyTeam;
+function renderLobby(data) {
+  // data: { teams?, soloPlayers?, roomNum, playerCount, maxPlayers, countdownMs, isTeam }
+  const { roomNum, playerCount, maxPlayers, countdownMs } = data;
 
-    if (joinBtn) {
-      // Disable if full and not my team
-      joinBtn.disabled = full && !isMyTeam;
-      joinBtn.classList.toggle('current-team', isMyTeam);
-      joinBtn.textContent = isMyTeam ? `✓ ${TEAM_DEF_CLIENT[t].name}` : `Join ${TEAM_DEF_CLIENT[t].name}`;
-    }
-    if (colEl) colEl.classList.toggle('active', isMyTeam);
+  // Update title
+  if (lobbyTitle) lobbyTitle.textContent = `Room #${roomNum || '?'}`;
+  if (lobbySubtitle) lobbySubtitle.textContent = `${playerCount}/${maxPlayers} players`;
+
+  // Countdown
+  if (countdownMs !== null && countdownMs !== undefined) {
+    startLobbyCountdown(countdownMs);
+  } else {
+    stopLobbyCountdown();
   }
 
-  // Status message
-  if (!myLobbyTeam) {
-    lobbyStatus.textContent = 'Select a team to continue';
-    readyBtn.disabled = true;
+  if (data.isTeam) {
+    // Show team columns, hide solo panel
+    if (lobbyTeamCols)  lobbyTeamCols.style.display  = '';
+    if (lobbySoloPanel) lobbySoloPanel.style.display  = 'none';
+    readyBtn.style.display = '';
+
+    const teams = data.teams || {};
+    for (let t = 1; t <= 4; t++) {
+      const members  = teams[t] || [];
+      const countEl  = document.getElementById(`lobbyCount${t}`);
+      const listEl   = document.getElementById(`lobbyMembers${t}`);
+      const joinBtn  = document.querySelector(`.lobby-join-btn[data-team="${t}"]`);
+      const colEl    = document.getElementById(`lobbyTeamCol${t}`);
+
+      if (countEl) countEl.textContent = `${members.length}/2`;
+      if (listEl) {
+        listEl.innerHTML = members.map(m => `
+          <li class="lobby-member-item${m.id === myId ? ' is-me' : ''}">
+            <span class="lobby-member-dot" style="background:${TEAM_DEF_CLIENT[t].color}"></span>
+            <span>${esc(m.name)}${m.id === myId ? ' (you)' : ''}</span>
+            <span class="lobby-member-check ${m.ready ? 'ready' : 'not-ready'}">${m.ready ? '✓' : '○'}</span>
+          </li>`).join('');
+      }
+      const full = members.length >= 2;
+      const isMyTeam = t === myLobbyTeam;
+      if (joinBtn) {
+        joinBtn.disabled = full && !isMyTeam;
+        joinBtn.classList.toggle('current-team', isMyTeam);
+        joinBtn.textContent = isMyTeam ? `✓ ${TEAM_DEF_CLIENT[t].name}` : `Join ${TEAM_DEF_CLIENT[t].name}`;
+      }
+      if (colEl) colEl.classList.toggle('active', isMyTeam);
+    }
+
+    if (!myLobbyTeam) {
+      lobbyStatus.textContent = 'Select a team to continue';
+      readyBtn.disabled = true;
+    } else {
+      const readyTeams = [1,2,3,4].filter(t => {
+        const m = teams[t] || [];
+        return m.length > 0 && m.every(p => p.ready);
+      }).length;
+      const needed = Math.max(0, 2 - readyTeams);
+      lobbyStatus.textContent = needed > 0
+        ? `Waiting for ${needed} more team${needed>1?'s':''} to be ready…`
+        : 'Starting soon…';
+    }
   } else {
-    // Count fully ready teams
-    const readyTeams = [1,2,3,4].filter(t => {
-      const m = teams[t] || [];
-      return m.length > 0 && m.every(p => p.ready);
-    }).length;
-    const needed = Math.max(0, 2 - readyTeams);
-    lobbyStatus.textContent = needed > 0
-      ? `Waiting for ${needed} more team${needed>1?'s':''} to be ready…`
-      : 'Starting soon…';
+    // Solo mode: show flat player list, hide team columns
+    if (lobbyTeamCols)  lobbyTeamCols.style.display  = 'none';
+    if (lobbySoloPanel) lobbySoloPanel.style.display  = '';
+    readyBtn.style.display = 'none';
+
+    const soloPlayers = data.soloPlayers || [];
+    if (lobbySoloList) {
+      lobbySoloList.innerHTML = soloPlayers.map(p => `
+        <li class="lobby-member-item${p.id === myId ? ' is-me' : ''}">
+          <span class="lobby-solo-dot"></span>
+          <span>${esc(p.name)}${p.id === myId ? ' (you)' : ''}</span>
+        </li>`).join('') || '<li class="lobby-member-item">Waiting for players…</li>';
+    }
+    lobbyStatus.textContent = countdownMs !== null ? '' :
+      (playerCount < 2 ? 'Waiting for at least 1 more player…' : 'Starting soon…');
   }
 }
 
-function updateLobbyButtonStates(teams) {
-  if (!teams) return;
+function updateLobbyButtonStates(data) {
+  if (!data?.isTeam) return;
+  const teams = data.teams || {};
   for (let t = 1; t <= 4; t++) {
     const members = teams[t] || [];
     const joinBtn = document.querySelector(`.lobby-join-btn[data-team="${t}"]`);
@@ -319,14 +370,6 @@ canvas.addEventListener('touchend', e => {
   if (Math.abs(dx)>20||Math.abs(dy)>20)
     sendDir(Math.abs(dx)>Math.abs(dy) ? (dx>0?'right':'left') : (dy>0?'down':'up'));
 }, {passive:true});
-
-// ─── Zone countdown ───────────────────────────────────────────────────────────
-function startZoneCountdown(ms) {
-  clearInterval(zoneIntervalId);
-  zoneCountdown = Math.round(ms/1000);
-  zoneTimerVal.textContent = zoneCountdown;
-  zoneIntervalId = setInterval(() => { zoneCountdown=Math.max(0,zoneCountdown-1); zoneTimerVal.textContent=zoneCountdown; }, 1000);
-}
 
 // ─── HUD ─────────────────────────────────────────────────────────────────────
 function updateHUD() {
@@ -395,10 +438,9 @@ function enterSpectate() {
 // ─── Leave to menu — emits returnToMenu to server then resets client ──────────
 function leaveToMenu() {
   socket.emit('returnToMenu');
-  // Reset all local game state
   myId = null; players = {}; grid = null;
   isSpectating = false; spectateId = null;
-  clearInterval(zoneIntervalId);
+  stopLobbyCountdown();
   hideAllOverlays();
   showScreen('modeScreen');
 }
@@ -420,16 +462,13 @@ document.getElementById('spectateMenuBtn').addEventListener('click', leaveToMenu
 document.getElementById('victoryMenuBtn') .addEventListener('click', leaveToMenu);
 document.getElementById('gameEndMenuBtn') .addEventListener('click', leaveToMenu);
 document.getElementById('replayBtn').addEventListener('click', () => {
-  // Emit returnToMenu so server cleans up, then re-join same mode
   socket.emit('returnToMenu');
   myId = null; players = {}; grid = null;
   isSpectating = false; spectateId = null;
-  clearInterval(zoneIntervalId);
+  stopLobbyCountdown();
   hideAllOverlays();
-  if (lastMode?.mode === 'solo') {
-    socket.emit('join', { name: playerName, mode: 'solo', ranked: lastMode.ranked, color: lastMode.color });
-  } else if (lastMode?.mode === 'team') {
-    socket.emit('joinLobby', { name: playerName, ranked: lastMode.ranked });
+  if (lastMode?.mode) {
+    socket.emit('joinLobby', { name: playerName, mode: lastMode.mode, ranked: lastMode.ranked, color: lastMode.color });
   } else {
     showScreen('modeScreen');
   }
@@ -440,7 +479,7 @@ document.getElementById('replayBtn').addEventListener('click', () => {
 // Kicked / banned by server
 socket.on('kicked', data => {
   myId = null; players = {}; grid = null; isSpectating = false; spectateId = null;
-  clearInterval(zoneIntervalId);
+  stopLobbyCountdown();
   hideAllOverlays();
   showScreen('loginScreen');
   const until = data.until ? ` until ${new Date(data.until).toLocaleTimeString()}` : '';
@@ -461,14 +500,13 @@ socket.on('kicked', data => {
   setTimeout(() => el.remove(), 6000);
 });
 
-// Solo game init
+// Game init (from lobby → game transition)
 socket.on('init', data => {
   myId     = data.playerId;
-  gridSize = data.gridSize;
+  gridSize = data.gridSize || 200;
   grid     = new Uint8Array(data.grid);
   isRanked = data.isRanked;
   isTeam   = data.isTeam;
-  zone     = data.zone;
 
   absorbPlayers(data.players);
 
@@ -476,11 +514,11 @@ socket.on('init', data => {
   if (me) { cam.x = me.x*CELL - canvas.width/2 + CELL/2; cam.y = me.y*CELL - canvas.height/2 + CELL/2; }
 
   document.body.classList.toggle('chill-mode', !isRanked);
-  startZoneCountdown(data.timeToShrink);
   setupModeBadge();
 
-  // Transition from lobby or mode screen → game
-  myLobbyTeam = null; playerReady = false;
+  // Transition from lobby → game
+  stopLobbyCountdown();
+  myLobbyTeam = null; playerReady = false; lobbyIsTeam = false;
   showScreen('gameScreen');
   if (!gameLoopRunning) { gameLoopRunning = true; requestAnimationFrame(renderLoop); }
 
@@ -490,27 +528,23 @@ socket.on('init', data => {
 // Lobby events
 socket.on('lobbyJoined', data => {
   myId = socket.id; // needed for "is-me" highlight in lobby
-  lobbyTitle.textContent   = data.isRanked ? 'Team Lobby — Ranked' : 'Team Lobby — Chill';
-  lobbySubtitle.textContent = 'Pick your team, then click READY';
+  lobbyIsTeam = data.isTeam;
   readyBtn.disabled = true; readyBtn.textContent = 'READY'; readyBtn.classList.remove('is-ready');
   playerReady = false; myLobbyTeam = null;
-  renderLobby(data.teams);
+  renderLobby(data);
   showScreen('lobbyScreen');
 });
 
 socket.on('lobbyUpdate', data => {
   if (!lobbyScreen.classList.contains('active')) return;
-  renderLobby(data.teams);
+  renderLobby(data);
 });
 
 socket.on('tick', data => {
   absorbPlayers(data.players);
-  zone = data.zone;
   for (const {i,t} of data.dirty) grid[i] = t;
-  startZoneCountdown(data.timeToShrink);
   updateHUD(); updateLeaderboard();
 });
-socket.on('zoneUpdate', data => { zone = data.zone; startZoneCountdown(data.timeToShrink); });
 socket.on('playerJoined', p => { setTeamColor(p.team, p.color); players[p.id] = p; });
 socket.on('playerLeft',   d => { delete players[d.id]; });
 // ── playerDied — server confirmed this client is dead (Battle Royale, no respawn)
@@ -548,7 +582,6 @@ socket.on('playerDied', data => {
 
 // ── gameOver — match has ended
 socket.on('gameOver', data => {
-  clearInterval(zoneIntervalId);
   const wasSpectating = isSpectating;
   isSpectating = false;
   document.getElementById('spectateHUD').classList.add('hidden');
@@ -642,10 +675,6 @@ function drawMinimap(W, H) {
     }
   }
   miniCtx.putImageData(imgData,0,0);
-  if (zone.radius>0) {
-    miniCtx.strokeStyle='#e74c3c'; miniCtx.lineWidth=1;
-    miniCtx.beginPath(); miniCtx.arc(zone.cx*cpx,zone.cy*cpx,zone.radius*cpx,0,Math.PI*2); miniCtx.stroke();
-  }
   for (const p of Object.values(players)) {
     if (!p.alive||p.waiting) continue;
     miniCtx.fillStyle = tColor(p.team);
@@ -709,15 +738,6 @@ function drawFrame() {
     }
   }
 
-  // Zone overlay
-  const zx=zone.cx*CELL, zy=zone.cy*CELL, zr=zone.radius*CELL;
-  if (zr>0) {
-    ctx.save();
-    ctx.beginPath(); ctx.rect(0,0,gridSize*CELL,gridSize*CELL); ctx.arc(zx,zy,zr,0,Math.PI*2,true);
-    ctx.fillStyle='rgba(180,0,0,0.2)'; ctx.fill('evenodd'); ctx.restore();
-    ctx.strokeStyle='#e74c3c'; ctx.lineWidth=3; ctx.setLineDash([12,6]);
-    ctx.beginPath(); ctx.arc(zx,zy,zr,0,Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
-  }
   ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=4;
   ctx.strokeRect(0,0,gridSize*CELL,gridSize*CELL);
   ctx.restore();

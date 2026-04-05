@@ -110,17 +110,23 @@
     </div>
   </div>
 
-  <!-- ══ Screen 3: Team Lobby ═══════════════════════════════════════════════ -->
+  <!-- ══ Screen 3: Lobby (all modes) ══════════════════════════════════════════ -->
   <div id="lobbyScreen" class="screen">
     <div class="lobby-wrap">
       <div class="lobby-header">
         <button id="lobbyBackBtn" class="back-btn">← Back</button>
-        <h2 class="lobby-title" id="lobbyTitle">Team Lobby</h2>
-        <p class="lobby-subtitle" id="lobbySubtitle">Pick your team, then click READY</p>
+        <h2 class="lobby-title" id="lobbyTitle">Room #?</h2>
+        <p class="lobby-subtitle" id="lobbySubtitle">0/10 players</p>
+        <div class="lobby-countdown" id="lobbyCountdown"></div>
       </div>
 
-      <!-- 4 team columns -->
-      <div class="lobby-teams">
+      <!-- Solo player list (shown only in solo modes) -->
+      <div id="lobbySoloPanel" style="display:none">
+        <ul class="lobby-members lobby-solo-list" id="lobbySoloList"></ul>
+      </div>
+
+      <!-- 4 team columns (shown only in team modes) -->
+      <div class="lobby-teams" id="lobbyTeamCols">
 
         <div class="lobby-team-col" id="lobbyTeamCol1">
           <div class="lobby-team-header lth-red">
@@ -165,7 +171,7 @@
       </div><!-- .lobby-teams -->
 
       <div class="lobby-footer">
-        <div class="lobby-status" id="lobbyStatus">Select a team to continue</div>
+        <div class="lobby-status" id="lobbyStatus">Waiting…</div>
         <button id="readyBtn" class="ready-btn" disabled>READY</button>
       </div>
     </div>
@@ -181,12 +187,6 @@
       <div class="hud-pill team-pill" id="teamDisplay">—</div>
     </div>
     <div class="mode-hud-badge" id="modeBadge"></div>
-
-    <!-- Zone timer top-center -->
-    <div class="zone-banner">
-      <span class="zone-dot">⬤</span>
-      Safe zone closes in <strong id="zoneTimerVal">30</strong>s
-    </div>
 
     <!-- Leaderboard top-right -->
     <div class="leaderboard" id="leaderboard">
