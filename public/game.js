@@ -31,6 +31,11 @@ let isTeam   = false;
 let zoneCountdown  = 30;
 let zoneIntervalId = null;
 
+// ─── Spectate state ───────────────────────────────────────────────────────────
+let isSpectating = false;
+let spectateId   = null;
+let lastMode     = null;  // { mode, ranked, color } — for "Play Again"
+
 // teamColorMap: teamId → hex color (built from player state each tick)
 const teamColorMap = {};
 
@@ -157,6 +162,7 @@ document.querySelectorAll('.mode-card').forEach(card => {
   card.addEventListener('click', () => {
     const mode   = card.dataset.mode;
     const ranked = card.dataset.ranked === 'true';
+    lastMode = { mode, ranked, color: selectedColor };
     if (mode === 'solo') {
       socket.emit('join', { name: playerName, mode: 'solo', ranked, color: selectedColor });
     } else {
@@ -265,7 +271,7 @@ function updateLobbyButtonStates(teams) {
 // ─── Input ────────────────────────────────────────────────────────────────────
 let lastDir = 'right';
 function sendDir(dir) {
-  if (!myId || !players[myId]?.alive) return;
+  if (!myId || !players[myId]?.alive || isSpectating) return;
   if (dir === lastDir) return;
   lastDir = dir; socket.emit('direction', dir);
 }
@@ -332,6 +338,70 @@ function updateLeaderboard() {
 }
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// ─── Spectate helpers ─────────────────────────────────────────────────────────
+function updateSpectateHUD() {
+  const p = players[spectateId];
+  if (!p) return;
+  document.getElementById('spectateName').textContent = p.name;
+  const eloEl = document.getElementById('spectateEloVal');
+  if (isRanked) { eloEl.textContent = `ELO ${p.elo}`; eloEl.style.display = ''; }
+  else eloEl.style.display = 'none';
+}
+
+function enterSpectate() {
+  isSpectating = true;
+  document.getElementById('deathOverlay').classList.add('hidden');
+  const alive = Object.values(players).filter(p => p.alive && !p.waiting);
+  if (alive.length) spectateId = alive[0].id;
+  document.getElementById('spectateHUD').classList.remove('hidden');
+  updateSpectateHUD();
+}
+
+// ─── Leave-to-menu ────────────────────────────────────────────────────────────
+function leaveToMenu() {
+  socket.emit('leaveGame');
+  myId = null; players = {}; grid = null;
+  isSpectating = false; spectateId = null;
+  clearInterval(zoneIntervalId);
+  ['deathOverlay','victoryOverlay','gameEndOverlay'].forEach(id =>
+    document.getElementById(id).classList.add('hidden')
+  );
+  document.getElementById('spectateHUD').classList.add('hidden');
+  showScreen('modeScreen');
+}
+
+// Click on canvas → cycle spectate target
+canvas.addEventListener('click', () => {
+  if (!isSpectating) return;
+  const alive = Object.values(players).filter(p => p.alive && !p.waiting);
+  if (!alive.length) return;
+  const idx  = alive.findIndex(p => p.id === spectateId);
+  spectateId = alive[(idx + 1) % alive.length].id;
+  updateSpectateHUD();
+});
+
+// ─── Overlay button wiring ────────────────────────────────────────────────────
+document.getElementById('spectateBtn')   .addEventListener('click', enterSpectate);
+document.getElementById('deathMenuBtn')  .addEventListener('click', leaveToMenu);
+document.getElementById('spectateMenuBtn').addEventListener('click', leaveToMenu);
+document.getElementById('victoryMenuBtn').addEventListener('click', leaveToMenu);
+document.getElementById('gameEndMenuBtn').addEventListener('click', leaveToMenu);
+document.getElementById('replayBtn').addEventListener('click', () => {
+  socket.emit('leaveGame');
+  myId = null; players = {}; grid = null;
+  isSpectating = false; spectateId = null;
+  clearInterval(zoneIntervalId);
+  document.getElementById('victoryOverlay').classList.add('hidden');
+  document.getElementById('spectateHUD').classList.add('hidden');
+  if (lastMode?.mode === 'solo') {
+    socket.emit('join', { name: playerName, mode: 'solo', ranked: lastMode.ranked, color: lastMode.color });
+  } else if (lastMode?.mode === 'team') {
+    socket.emit('joinLobby', { name: playerName, ranked: lastMode.ranked });
+  } else {
+    showScreen('modeScreen');
+  }
+});
+
 // ─── Socket events ────────────────────────────────────────────────────────────
 
 // Solo game init
@@ -387,13 +457,60 @@ socket.on('zoneUpdate', data => { zone = data.zone; startZoneCountdown(data.time
 socket.on('playerJoined', p => { setTeamColor(p.team, p.color); players[p.id] = p; });
 socket.on('playerLeft',   d => { delete players[d.id]; });
 socket.on('died', data => {
-  const eloText = isRanked ? `  ELO: ${data.elo}` : '';
-  deathMsg.textContent = data.killedBy==='zone'
-    ? `Eliminated by the safe-zone!${eloText}`
-    : `Eliminated by ${data.killedBy}!${eloText}`;
-  deathOverlay.classList.remove('hidden'); lastDir='right';
+  // Description line
+  deathMsg.textContent = data.killedBy === 'zone'
+    ? 'Eliminated by the safe zone'
+    : `Eliminated by ${data.killedBy}`;
+
+  // ELO stat
+  const eloWrap = document.getElementById('deathEloWrap');
+  const eloEl   = document.getElementById('deathEloChange');
+  if (data.ranked && data.eloChange !== undefined) {
+    const delta = data.eloChange;
+    eloEl.textContent  = delta >= 0 ? `+${delta}` : `${delta}`;
+    eloEl.className    = 'stat-val ' + (delta >= 0 ? 'pos' : 'neg');
+    eloWrap.style.display = '';
+  } else {
+    eloWrap.style.display = 'none';
+  }
+
+  document.getElementById('deathRank').textContent  = `#${data.rank}/${data.totalPlayers}`;
+  document.getElementById('deathKills').textContent = data.kills;
+
+  deathOverlay.classList.remove('hidden');
+  lastDir = 'right';
 });
-socket.on('respawned', () => deathOverlay.classList.add('hidden'));
+
+socket.on('gameOver', data => {
+  clearInterval(zoneIntervalId);
+  const wasSpectating = isSpectating;
+  isSpectating = false;
+  document.getElementById('spectateHUD').classList.add('hidden');
+
+  if (data.won) {
+    document.getElementById('victoryKills').textContent = data.kills;
+    document.getElementById('victoryTerr').textContent  = data.territory || 0;
+    const eloWrapV = document.getElementById('victoryEloWrap');
+    const eloValV  = document.getElementById('victoryEloVal');
+    if (isRanked) {
+      eloValV.textContent   = data.elo;
+      eloWrapV.style.display = '';
+    } else {
+      eloWrapV.style.display = 'none';
+    }
+    const eloGained = data.elo - (players[myId]?.startElo ?? data.elo);
+    document.getElementById('victoryMsg').textContent =
+      isRanked && eloGained > 0 ? `+${eloGained} ELO this match` : '';
+    document.getElementById('deathOverlay').classList.add('hidden');
+    document.getElementById('victoryOverlay').classList.remove('hidden');
+  } else if (wasSpectating) {
+    const winner = Object.values(players).find(p => p.alive && !p.waiting);
+    document.getElementById('gameEndMsg').textContent =
+      winner ? `${winner.name} wins the match!` : 'Match ended.';
+    document.getElementById('gameEndOverlay').classList.remove('hidden');
+  }
+  // If the death screen is showing they can still press MENU
+});
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 function showToast(msg, color='#3498db') {
@@ -412,10 +529,21 @@ function showToast(msg, color='#3498db') {
 
 // ─── Camera ───────────────────────────────────────────────────────────────────
 function updateCamera() {
-  const me = players[myId];
-  if (!me || !me.alive) return;
-  cam.x += (me.x*CELL - canvas.width/2  + CELL/2 - cam.x) * 0.12;
-  cam.y += (me.y*CELL - canvas.height/2 + CELL/2 - cam.y) * 0.12;
+  let target = null;
+  if (isSpectating) {
+    // Auto-switch to an alive player if current target died
+    if (!players[spectateId]?.alive) {
+      const next = Object.values(players).find(p => p.alive && !p.waiting);
+      if (next) { spectateId = next.id; updateSpectateHUD(); }
+    }
+    target = players[spectateId];
+  } else {
+    const me = players[myId];
+    if (me?.alive) target = me;
+  }
+  if (!target) return;
+  cam.x += (target.x*CELL - canvas.width/2  + CELL/2 - cam.x) * 0.12;
+  cam.y += (target.y*CELL - canvas.height/2 + CELL/2 - cam.y) * 0.12;
 }
 
 // ─── Minimap ─────────────────────────────────────────────────────────────────

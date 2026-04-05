@@ -18,7 +18,6 @@ app.get('/leaderboard', (_req, res) =>
 const GRID_SIZE = 100;
 const TICK_MS = 100;
 const ZONE_SHRINK_INTERVAL = 30000;
-const RESPAWN_DELAY = 3000;
 const START_HALF = 2;
 const SPAWN_INVINCIBILITY_MS = 3000;
 const MIN_TRAIL_FOR_SELF_KILL = 5;
@@ -115,6 +114,8 @@ function createRoom(roomId) {
     zonePhaseIdx: 0, nextShrinkAt: null, gameStartedAt: null,
     players: {},      // active game players
     nextTeamId: 1,    // counter for unique solo team IDs
+    gameOver: false,
+    peakPlayers: 0,
   };
 }
 
@@ -210,10 +211,11 @@ function captureTerritory(room, player) {
   player.trail = []; player.inTerritory = true;
 }
 
-// ─── Kill / respawn ───────────────────────────────────────────────────────────
+// ─── Kill (no respawn — Battle Royale) ───────────────────────────────────────
 function killPlayer(room, player, killer) {
   if (!player.alive) return;
   player.trail = []; player.alive = false;
+
   const hasTeammate = Object.values(room.players).some(
     p => p.id !== player.id && p.team === player.team && p.alive
   );
@@ -221,24 +223,78 @@ function killPlayer(room, player, killer) {
     for (let i = 0; i < room.grid.length; i++)
       if (room.grid[i] === player.team) { room.grid[i] = 0; room.dirtySet.add(i); }
   }
+
+  // Rank = number of players still alive after this death + 1
+  const aliveAfter = Object.values(room.players).filter(p => p.alive && !p.waiting).length;
+  const total      = Object.keys(room.players).length;
+  player.finalRank = aliveAfter + 1;
+
+  let eloChange = 0;
   if (room.isRanked) {
-    const vData = getPlayerData(player.name);
+    const vData  = getPlayerData(player.name);
     vData.games++;
-    vData.elo = Math.max(0, vData.elo - 20);
-    player.elo = vData.elo;
+    eloChange    = -Math.min(20, vData.elo);
+    vData.elo    = Math.max(0, vData.elo - 20);
+    player.elo   = vData.elo;
     if (killer && killer.id !== player.id) {
-      const kData = getPlayerData(killer.name);
+      const kData  = getPlayerData(killer.name);
       kData.wins++;
-      kData.elo += 25;
-      killer.elo = kData.elo;
+      kData.elo   += 25;
+      killer.elo   = kData.elo;
+      killer.kills = (killer.kills || 0) + 1;
     }
     saveEloData();
     broadcastLeaderboard();
+  } else if (killer && killer.id !== player.id) {
+    killer.kills = (killer.kills || 0) + 1;
   }
-  io.to(player.id).emit('died', { killedBy: killer ? killer.name : 'zone', elo: player.elo, ranked: room.isRanked });
-  setTimeout(() => {
-    if (room.players[player.id]) { spawnPlayer(room, player); io.to(player.id).emit('respawned'); }
-  }, RESPAWN_DELAY);
+
+  io.to(player.id).emit('died', {
+    killedBy: killer ? killer.name : 'zone',
+    elo: player.elo, eloChange,
+    kills: player.kills || 0,
+    rank: player.finalRank,
+    totalPlayers: total,
+    ranked: room.isRanked,
+  });
+
+  // Check if the match is now over
+  checkWinCondition(room);
+}
+
+// ─── Win condition ────────────────────────────────────────────────────────────
+function checkWinCondition(room) {
+  if (room.gameOver) return;
+  const total = Object.keys(room.players).length;
+  if (total < 2) return; // single-player room — no winner declared
+  const alive = Object.values(room.players).filter(p => p.alive && !p.waiting);
+
+  let ended = false;
+  if (room.isTeam) {
+    const aliveTeams = new Set(alive.map(p => p.team));
+    ended = aliveTeams.size <= 1;
+  } else {
+    ended = alive.length <= 1;
+  }
+  if (!ended) return;
+
+  room.gameOver = true;
+  // Count territory for winners (snapshot at game end)
+  const tc = {};
+  for (let i = 0; i < room.grid.length; i++) { const t = room.grid[i]; if (t) tc[t] = (tc[t]||0)+1; }
+
+  for (const p of Object.values(room.players)) {
+    const won = alive.some(a => a.id === p.id);
+    io.to(p.id).emit('gameOver', {
+      won,
+      kills: p.kills || 0,
+      elo: p.elo,
+      territory: tc[p.team] || 0,
+      totalPlayers: total,
+    });
+  }
+  // Wipe the room after a grace period so a fresh game can start
+  setTimeout(() => rooms.delete(room.id), 10_000);
 }
 
 // ─── Zone shrink ──────────────────────────────────────────────────────────────
@@ -264,6 +320,7 @@ const OPP = { up:'down', down:'up', left:'right', right:'left' };
 function gameTick() { for (const r of rooms.values()) if (r.phase === 'game') tickRoom(r); }
 
 function tickRoom(room) {
+  if (room.gameOver) return;
   room.dirtySet.clear();
   tryShrinkZone(room);
   for (const player of Object.values(room.players)) {
@@ -331,11 +388,12 @@ function startGameFromLobby(room) {
   // Spawn all lobby players that have a team
   for (const lp of Object.values(room.lobby.players)) {
     if (!lp.team) continue;
+    const startEloLp = getPlayerData(lp.name).elo;
     const gamePlayer = {
       id: lp.id, name: lp.name,
       team: lp.team,
       color: TEAM_DEF[lp.team].color,
-      elo: getPlayerData(lp.name).elo,
+      elo: startEloLp, startElo: startEloLp, kills: 0, finalRank: 0,
       x:0, y:0, direction:'right', nextDir:'right',
       trail:[], alive:false, waiting:false, inTerritory:true, spawnedAt:0,
       roomId: room.id,
@@ -345,6 +403,7 @@ function startGameFromLobby(room) {
   }
   room.gameStartedAt = Date.now();
   room.nextShrinkAt  = room.gameStartedAt + ZONE_SHRINK_INTERVAL;
+  room.peakPlayers   = Object.keys(room.players).length;
   // Send individual init to each lobby player
   for (const lp of Object.values(room.lobby.players)) {
     const sock = io.sockets.sockets.get(lp.id);
@@ -382,14 +441,16 @@ io.on('connection', socket => {
     room.nextTeamId = (room.nextTeamId % 254) + 1;
     // Validate colour
     const safeColor = SOLO_COLORS.has(color) ? color : SOLO_COLOR_DEFAULT;
+    const startElo = getPlayerData(safeName).elo;
     const player = {
       id: socket.id, name: safeName, team, color: safeColor,
-      elo: getPlayerData(safeName).elo,
+      elo: startElo, startElo, kills: 0, finalRank: 0,
       x:0, y:0, direction:'right', nextDir:'right',
       trail:[], alive:false, waiting:false, inTerritory:true, spawnedAt:0, roomId,
     };
     room.players[socket.id] = player;
     spawnPlayer(room, player);
+    room.peakPlayers = Math.max(room.peakPlayers, Object.keys(room.players).length);
     if (!room.gameStartedAt) { room.gameStartedAt = Date.now(); room.nextShrinkAt = room.gameStartedAt + ZONE_SHRINK_INTERVAL; }
     const pStates = Object.fromEntries(Object.entries(room.players).map(([id,p])=>[id,{
       id:p.id,name:p.name,team:p.team,color:p.color,
@@ -453,8 +514,38 @@ io.on('connection', socket => {
     const valid = ['up','down','left','right'];
     if (!valid.includes(dir) || !playerRoomId || playerPhase !== 'game') return;
     const room   = rooms.get(playerRoomId);
-    const player = room?.players[socket.id];
+    if (!room || room.gameOver) return;
+    const player = room.players[socket.id];
     if (player?.alive && !player.waiting) player.nextDir = dir;
+  });
+
+  // ── Leave game (dead / spectating → back to menu) ─────────────────────────
+  socket.on('leaveGame', () => {
+    if (!playerRoomId) return;
+    const room = rooms.get(playerRoomId);
+    if (room) {
+      const player = room.players[socket.id];
+      if (player) {
+        // Kill if still alive (e.g. rage-quit)
+        if (player.alive && !room.gameOver) killPlayer(room, player, null);
+        else if (room.isRanked) { getPlayerData(player.name).elo = player.elo; saveEloData(); }
+        const hasTeammate = Object.values(room.players).some(
+          p => p.id !== socket.id && p.team === player.team && p.alive
+        );
+        if (!hasTeammate) {
+          for (let i = 0; i < room.grid.length; i++)
+            if (room.grid[i] === player.team) { room.grid[i] = 0; room.dirtySet.add(i); }
+        }
+        delete room.players[socket.id];
+        io.to(room.id).emit('playerLeft', { id: socket.id });
+      }
+      if (room.lobby?.players[socket.id]) {
+        delete room.lobby.players[socket.id];
+        broadcastLobbyUpdate(room);
+      }
+      socket.leave(room.id);
+    }
+    playerRoomId = null; playerPhase = null;
   });
 
   // ── Leaderboard room ───────────────────────────────────────────────────────

@@ -315,28 +315,72 @@ kbd {
 body.chill-mode .elo-pill,
 body.chill-mode .lb-elo { display: none; }
 
-/* Overlays */
+/* ── Overlays ─────────────────────────────────────────────────────────────── */
 .overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+  position: fixed; inset: 0; background: rgba(0,0,0,0.82);
   display: flex; align-items: center; justify-content: center; z-index: 200;
 }
 .overlay.hidden { display: none; }
 .overlay-box {
-  text-align: center; background: rgba(10,10,26,0.95);
-  border: 2px solid #e74c3c; border-radius: 16px; padding: 40px 50px;
-  animation: popIn .25s ease;
+  text-align: center; background: rgba(10,10,26,0.97);
+  border: 2px solid #e74c3c; border-radius: 18px; padding: 36px 44px;
+  animation: popIn .22s ease; max-width: 420px; width: 92%;
 }
-@keyframes popIn { from { transform:scale(.85);opacity:0; } to { transform:scale(1);opacity:1; } }
-.skull { font-size: 48px; margin-bottom: 8px; }
-.overlay-box h2 { font-size: 28px; color: #e74c3c; letter-spacing: 3px; margin-bottom: 10px; }
-.overlay-box p  { color: #99a3c0; margin-bottom: 12px; font-size: 14px; }
-.spinner {
-  width: 36px; height: 36px;
-  border: 3px solid rgba(255,255,255,0.1); border-top-color: #e74c3c;
-  border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 14px;
+@keyframes popIn { from { transform:scale(.88);opacity:0; } to { transform:scale(1);opacity:1; } }
+
+.skull  { font-size: 46px; margin-bottom: 6px; }
+.trophy { font-size: 52px; margin-bottom: 6px; }
+.overlay-box h2 { font-size: 26px; letter-spacing: 3px; margin-bottom: 8px; color: #e74c3c; }
+.overlay-box p  { color: #8892b0; font-size: 13px; margin-bottom: 4px; }
+
+/* Victory box */
+.victory-box { border-color: #f1c40f; }
+.victory-box h2 { color: #f1c40f; }
+
+/* Stats row (death / victory) */
+.stat-row {
+  display: flex; gap: 12px; justify-content: center; margin: 20px 0;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
-.respawn-txt { color: #7f8aaa; font-size: 13px; }
+.stat-item {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  background: rgba(255,255,255,0.05); border-radius: 12px;
+  padding: 12px 18px; min-width: 72px;
+}
+.stat-val { font-size: 22px; font-weight: 900; color: #fff; }
+.stat-val.pos  { color: #2ecc71; }
+.stat-val.neg  { color: #e74c3c; }
+.stat-val.gold { color: #f1c40f; }
+.stat-lbl {
+  font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: #555;
+}
+
+/* Overlay buttons */
+.ovl-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+.ovl-btn {
+  padding: 12px 22px; border: none; border-radius: 10px;
+  font-size: 13px; font-weight: 800; letter-spacing: 1.5px;
+  cursor: pointer; transition: filter .15s, transform .1s;
+}
+.ovl-btn:hover  { filter: brightness(1.15); }
+.ovl-btn:active { transform: scale(.97); }
+.ovl-primary   { background: linear-gradient(135deg,#e74c3c,#c0392b); color: #fff; }
+.ovl-secondary { background: rgba(255,255,255,0.1); color: #ccc; border: 1px solid rgba(255,255,255,0.2); }
+.ovl-green     { background: linear-gradient(135deg,#2ecc71,#27ae60); color: #fff; }
+.ovl-sm        { padding: 8px 16px; font-size: 12px; }
+
+/* ── Spectate HUD ─────────────────────────────────────────────────────────── */
+.spec-hud {
+  position: fixed; top: 0; left: 0; right: 0;
+  display: flex; align-items: center; justify-content: center; gap: 18px;
+  background: rgba(0,0,0,0.65); backdrop-filter: blur(6px);
+  padding: 9px 20px; z-index: 150; flex-wrap: wrap;
+}
+.spec-hud.hidden { display: none; }
+.spec-info { display: flex; align-items: center; gap: 8px; }
+.spec-label { font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: #6b7599; font-weight: 700; }
+.spec-name  { font-size: 16px; font-weight: 800; color: #fff; }
+.spec-elo   { font-size: 13px; color: #f39c12; font-weight: 700; }
+.spec-hint  { font-size: 11px; color: #4a5378; }
 
 /* Mobile D-pad */
 .dpad { display: none; position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); }
