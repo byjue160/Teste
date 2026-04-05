@@ -76,6 +76,109 @@ const SPAWN_ANCHORS_TEAM = {
   3: { x: 170, y: 30  }, 4: { x: 30,  y: 170 },
 };
 
+// ─── Bot system constants ─────────────────────────────────────────────────────
+const TARGET_ENTITIES  = 6;   // humans + bots per room (solo only)
+const BOT_AI_INTERVAL  = 2;   // update bot AI every N game ticks (= 200 ms)
+
+const BOT_NAMES = [
+  'Shadow_X','NightWolf','ProGamer42','xX_Killer_Xx','FastBoy',
+  'ZoneMaster','TerritoryKing','DarkHunter','SnipeKing','BladeRunner',
+  'StealthMode','IronFist','ChaosLord','VoidWalker','PhantomX',
+  'RageQuit99','NoMercy','TopFragger','EliteSniper','BeastMode',
+  'NeonRaider','CrimsonEdge','Arctic_Fox','ViperStrike','QuickDraw',
+  'DeadEye77','SilentBlade','ThunderBolt','NovaSurge','GhostKiller',
+  'AceHunter','StormBreaker','FrostByte','ShadowStep','DeltaForce',
+  'RedViper','NightShade','TurboKid','FlashPoint','IceBreaker',
+  'CobraKing','DragonFist','WraithMode','PhoenixUp','AlphaWolf',
+  'SteelNova','FireStorm','BlitzKrieg','NightOwl','DeathNote',
+  'HexBlade','OmegaKill','RushB_GO','ZeroHour','WarpSpeed',
+  'SilverFox','DarkMatter','StarKill','NebulaBoy','VortexX',
+  'GrimReaper','ChaosPilot','MindBreak','SkyRaider','GlitchHunt',
+  'IronVeil','ColdBlood','PureFrag','VenomKing','PixelKill',
+  'HyperBolt','ZenithX','LaserFox','CrystalBeast','TurboDrift',
+  'NinjaBoy','StormChaser','BlazeRun','NightCrawl','ShadowBane',
+  'AbyssKing','QuantumX','NullByte','SpectreOne','WildCard',
+  'MachineGun','DarkPulse','NeoBlade','SonicRush','CryptoKill',
+  'VegaStrike','CycloneX','HellfireZ','TwilightKill','BomberAce',
+  'MindHunter','SkyBreaker','OverDrive','NightFang','RedShadow',
+  'GoldRush','DiamondKill','SteelWind','AbyssWalker','NecroBlade',
+  'LunarWolf','SolarStrike','CosmicRay','DarkNova','FireFox77',
+  'ThunderKid','WarHammer','IceQueen','BloodMoon','SilentKill',
+  'VortexBane','PhantomAce','RisingEdge','NovaBlade','CelestialX',
+  'GrimHunter','SerpentX','HorizonX','FrostWolf','CyborgKill',
+  'ToxicShot','StormWing','EternalX','PlasmaKing','GlacierX',
+  'ShadowMind','WraithBane','TigerFang','NeonKill','SkyWalker42',
+  'ObsidianX','BronzeKing','SilverEdge','GoldenFrag','PlatinumX',
+  'CrimsonKill','CoralBlade','TealHunter','IndigoX','VioletKill',
+  'TurquoiseX','MaroonBane','ScarletWolf','CharcoalX','IvoryEdge',
+  'EbonyKing','PewterBlade','TitanFang','HexKill','OceanX',
+  'LavaBoy','MistWalker','StoneKing','MetalEdge','GlassKill',
+  'RubyStrike','SapphireX','EmeraldBane','AmberKill','OpalFang',
+  'GarnetWolf','TopazEdge','JasperKill','OnaxX','AgateStrike',
+  'ZirconBane','SunstoneX','MoonKill','StarFang','GalaxyEdge',
+  'CometKill','AsteroidX','NebulaBane','PulsarWolf','QuasarStrike',
+  'NovaBoy77','SupernovaX','HyperKill','TurboFang','MegaEdge',
+  'GigaStrike','TeraKill','PetaX','ExaBane','ZettaWolf',
+];
+
+const SOLO_COLORS_ARR = [
+  '#e74c3c','#3498db','#2ecc71','#f1c40f','#9b59b6','#e67e22',
+  '#e91e63','#00bcd4','#ecf0f1','#636e72','#a8e63d','#1abc9c',
+];
+let _botUid = 0;
+
+/** Return EASY / MEDIUM / HARD based on average human ELO in room. */
+function getBotLevel(room) {
+  const humans = Object.values(room.players).filter(p => !p.isBot && p.alive);
+  if (!humans.length) {
+    // Use lobby humans' stored ELO as proxy
+    const lp = Object.values(room.lobby?.players || {}).filter(p => !p.isBot);
+    if (!lp.length) return 'MEDIUM';
+    const avg = lp.reduce((s, p) => s + (getPlayerData(p.name).elo || 1000), 0) / lp.length;
+    if (avg < 1000) return 'EASY';
+    if (avg <= 1500) return 'MEDIUM';
+    return 'HARD';
+  }
+  const avg = humans.reduce((s, p) => s + (p.startElo || 1000), 0) / humans.length;
+  if (avg < 1000) return 'EASY';
+  if (avg <= 1500) return 'MEDIUM';
+  return 'HARD';
+}
+
+/** Max bots per room — reduced when server is under load (>8 active game rooms). */
+function maxBotsForServer() {
+  const active = [...rooms.values()].filter(r => r.phase === 'game').length;
+  return active > 8 ? 3 : 5;
+}
+
+/** Create one bot lobby entry. */
+function createBotLobbyEntry() {
+  const uid  = ++_botUid;
+  const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+  const color = SOLO_COLORS_ARR[Math.floor(Math.random() * SOLO_COLORS_ARR.length)];
+  return { id: `bot_${uid}`, name, isBot: true, team: null, ready: false, color };
+}
+
+/**
+ * Adjust bot count so (humans + bots) === TARGET_ENTITIES (solo rooms only).
+ * Called whenever the human count in the lobby changes.
+ */
+function syncBotsToRoom(room) {
+  if (room.isTeam) return; // bots only in solo rooms
+  const humanCount  = Object.values(room.lobby.players).filter(p => !p.isBot).length;
+  const bots        = Object.values(room.lobby.players).filter(p => p.isBot);
+  const targetBots  = Math.min(maxBotsForServer(), Math.max(0, TARGET_ENTITIES - humanCount));
+
+  if (bots.length < targetBots) {
+    for (let i = bots.length; i < targetBots; i++) {
+      const lp = createBotLobbyEntry();
+      room.lobby.players[lp.id] = lp;
+    }
+  } else if (bots.length > targetBots) {
+    bots.slice(targetBots).forEach(b => delete room.lobby.players[b.id]);
+  }
+}
+
 // ─── Persistent ELO / stats store ────────────────────────────────────────────
 // Shape: { [playerName]: { elo: number, wins: number, games: number } }
 // wins  = total kills,  games = total deaths (zone or player)
@@ -329,25 +432,30 @@ function killPlayer(room, player, killer) {
 
   let eloChange = 0;
   if (room.isRanked) {
-    const vData = getPlayerData(player.name);
-    vData.games++;
-    // Death penalty only if the player scored 0 kills this match
-    if ((player.kills || 0) === 0) {
-      eloChange  = -Math.min(-DEATH_NO_KILL_ELO, vData.elo);
-      vData.elo  = Math.max(0, vData.elo + DEATH_NO_KILL_ELO);
+    // ── Human victim: apply death penalty ──────────────────────────────────
+    if (!player.isBot) {
+      const vData = getPlayerData(player.name);
+      vData.games++;
+      if ((player.kills || 0) === 0) {
+        eloChange = -Math.min(-DEATH_NO_KILL_ELO, vData.elo);
+        vData.elo = Math.max(0, vData.elo + DEATH_NO_KILL_ELO);
+      }
+      player.elo = vData.elo;
     }
-    player.elo = vData.elo;
+    // ── Human killer: apply kill bonus ─────────────────────────────────────
     if (killer && killer.id !== player.id) {
-      const kData  = getPlayerData(killer.name);
-      kData.wins++;
-      kData.elo   += KILL_ELO;
-      killer.elo   = kData.elo;
       killer.kills = (killer.kills || 0) + 1;
+      if (!killer.isBot) {
+        const kData = getPlayerData(killer.name);
+        kData.wins++;
+        kData.elo  += KILL_ELO;
+        killer.elo  = kData.elo;
+      }
     }
     saveEloData();
     broadcastLeaderboard();
-  } else if (killer && killer.id !== player.id) {
-    killer.kills = (killer.kills || 0) + 1;
+  } else {
+    if (killer && killer.id !== player.id) killer.kills = (killer.kills || 0) + 1;
   }
 
   // "playerDied" — explicit BR death event (never confused with old "died")
@@ -384,9 +492,10 @@ function checkWinCondition(room) {
   // Set rank 1 for all surviving players
   for (const p of alive) p.finalRank = 1;
 
-  // Apply placement bonuses (ranked only)
+  // Apply placement bonuses (ranked, humans only — bots have no persistent ELO)
   if (room.isRanked) {
     for (const p of Object.values(room.players)) {
+      if (p.isBot) continue;
       const idx   = Math.min((p.finalRank || 1) - 1, PLACEMENT_BONUS.length - 1);
       const bonus = PLACEMENT_BONUS[idx] || 0;
       if (bonus > 0) {
@@ -420,6 +529,172 @@ function checkWinCondition(room) {
   setTimeout(() => rooms.delete(room.id), 10_000);
 }
 
+// ─── Bot AI ───────────────────────────────────────────────────────────────────
+const DIRS    = ['up','down','left','right'];
+const DIR_OPP = { up:'down', down:'up', left:'right', right:'left' };
+const DIR_VEC = { up:{x:0,y:-1}, down:{x:0,y:1}, left:{x:-1,y:0}, right:{x:1,y:0} };
+
+/** Direction that minimises Manhattan distance to (tx,ty). */
+function dirToward(bx, by, tx, ty) {
+  const dx = tx - bx, dy = ty - by;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx > 0 ? 'right' : 'left';
+  return dy > 0 ? 'down' : 'up';
+}
+
+/** Preferred direction, or a safe alternative (avoid immediate wall / self-trail). */
+function safeDir(room, bot, preferred) {
+  const safe = (dir) => {
+    const v = DIR_VEC[dir];
+    const nx = bot.x + v.x, ny = bot.y + v.y;
+    if (nx < 1 || nx >= GRID_SIZE - 1 || ny < 1 || ny >= GRID_SIZE - 1) return false;
+    if (bot.trail.length >= 3 && bot.trail.some(c => c.x === nx && c.y === ny)) return false;
+    return true;
+  };
+  if (safe(preferred)) return preferred;
+  // Try perpendicular, then reverse
+  const perp = (preferred === 'up' || preferred === 'down') ? ['left','right'] : ['up','down'];
+  for (const d of perp) if (safe(d)) return d;
+  return preferred; // no good option — let the game engine handle the wall collision
+}
+
+/** Nearest grid cell owned by bot's team (sampled every 4 cells for speed). */
+function nearestTerritory(room, bot) {
+  let best = null, bestD = Infinity;
+  for (let y = 0; y < GRID_SIZE; y += 4) {
+    for (let x = 0; x < GRID_SIZE; x += 4) {
+      if (room.grid[y * GRID_SIZE + x] !== bot.team) continue;
+      const d = Math.abs(x - bot.x) + Math.abs(y - bot.y);
+      if (d < bestD) { bestD = d; best = {x, y}; }
+    }
+  }
+  return best;
+}
+
+/** Nearest enemy trail cell within maxDist. */
+function nearestEnemyTrail(room, bot, maxDist) {
+  let best = null, bestD = Infinity;
+  for (const p of Object.values(room.players)) {
+    if (p.id === bot.id || p.team === bot.team || !p.alive || !p.trail.length) continue;
+    for (const c of p.trail) {
+      const d = Math.abs(c.x - bot.x) + Math.abs(c.y - bot.y);
+      if (d < bestD && d <= maxDist) { bestD = d; best = c; }
+    }
+  }
+  return best;
+}
+
+/** True if any alive enemy is within maxDist (Manhattan). */
+function hasNearbyThreat(room, bot, maxDist) {
+  for (const p of Object.values(room.players)) {
+    if (p.id === bot.id || p.team === bot.team || !p.alive) continue;
+    if (Math.abs(p.x - bot.x) + Math.abs(p.y - bot.y) <= maxDist) return true;
+  }
+  return false;
+}
+
+/**
+ * Update a single bot's nextDir.
+ * States: PATROL → CAPTURE → back-to-terr → PATROL
+ *         any state  → FLEE   (threat + long trail)
+ *         PATROL/CAPTURE → ATTACK  (enemy trail nearby, medium/hard)
+ */
+function updateBotAI(room, bot, now) {
+  const level = room.botLevel;
+
+  // ── FLEE override ─────────────────────────────────────────────────────────
+  if (!bot.inTerritory && bot.trail.length >= 10 && hasNearbyThreat(room, bot, 15))
+    bot.aiState = 'FLEE';
+  if (bot.inTerritory && bot.aiState === 'FLEE') {
+    bot.aiState = 'PATROL';
+    bot.aiStateEnd = now + 2000 + Math.random() * 4000;
+  }
+
+  // ── ATTACK check (medium / hard only) ────────────────────────────────────
+  if (level !== 'EASY' && (bot.aiState === 'PATROL' || bot.aiState === 'CAPTURE')) {
+    const aRange = level === 'HARD' ? 20 : 15;
+    const tgt = nearestEnemyTrail(room, bot, aRange);
+    if (tgt) { bot.aiState = 'ATTACK'; bot.atk = tgt; }
+  }
+
+  // ── State machine ─────────────────────────────────────────────────────────
+  switch (bot.aiState) {
+
+    case 'FLEE': {
+      const terr = nearestTerritory(room, bot);
+      bot.nextDir = terr
+        ? safeDir(room, bot, dirToward(bot.x, bot.y, terr.x, terr.y))
+        : safeDir(room, bot, bot.direction);
+      break;
+    }
+
+    case 'ATTACK': {
+      const t = bot.atk;
+      if (!t) { bot.aiState = 'PATROL'; break; }
+      // Verify target trail still exists
+      const alive = Object.values(room.players).some(p =>
+        p.team !== bot.team && p.alive && p.trail.some(c => c.x === t.x && c.y === t.y));
+      if (!alive) { bot.aiState = 'PATROL'; bot.aiStateEnd = now + 1500; break; }
+      bot.nextDir = safeDir(room, bot, dirToward(bot.x, bot.y, t.x, t.y));
+      break;
+    }
+
+    case 'CAPTURE': {
+      if (!bot.capPhase) bot.capPhase = 'out';
+      if (bot.capPhase === 'out') {
+        const maxOut = level === 'EASY' ? 7 : level === 'MEDIUM' ? 13 : 20;
+        bot.capSteps = (bot.capSteps || 0) + 1;
+        bot.nextDir  = safeDir(room, bot, bot.capDir || 'right');
+        if (bot.capSteps >= maxOut || now > (bot.aiStateEnd || Infinity)) bot.capPhase = 'back';
+      } else {
+        // Return to territory
+        if (bot.inTerritory) {
+          bot.aiState = 'PATROL';
+          bot.aiStateEnd = now + 3000 + Math.random() * 5000;
+          break;
+        }
+        const terr = nearestTerritory(room, bot);
+        if (!terr) { bot.aiState = 'PATROL'; break; }
+        bot.nextDir = safeDir(room, bot, dirToward(bot.x, bot.y, terr.x, terr.y));
+      }
+      break;
+    }
+
+    case 'PATROL':
+    default: {
+      // Direction change frequency
+      const interval = level === 'EASY' ? 22 : level === 'MEDIUM' ? 13 : 7;
+      bot.patTick = (bot.patTick || 0) + 1;
+      if (bot.patTick >= interval || !bot.patDir) {
+        bot.patTick = 0;
+        // Weighted random: 70 % keep/turn, 30 % full random
+        if (Math.random() < 0.3) {
+          bot.patDir = DIRS[Math.floor(Math.random() * 4)];
+        } else {
+          const perp = (bot.direction === 'up' || bot.direction === 'down')
+            ? ['left','right'] : ['up','down'];
+          bot.patDir = Math.random() < 0.6 ? bot.direction : perp[Math.floor(Math.random() * 2)];
+        }
+        // Chance to start a CAPTURE run
+        const capChance = level === 'EASY' ? 0.015 : level === 'MEDIUM' ? 0.035 : 0.06;
+        if (bot.inTerritory && Math.random() < capChance) {
+          bot.aiState   = 'CAPTURE';
+          bot.capPhase  = 'out';
+          bot.capSteps  = 0;
+          bot.capDir    = DIRS[Math.floor(Math.random() * 4)];
+          bot.aiStateEnd = now + 5000 + Math.random() * 5000;
+        }
+      }
+      bot.nextDir = safeDir(room, bot, bot.patDir || 'right');
+      break;
+    }
+  }
+
+  // ── Micro-errors (add human-like imperfection) ────────────────────────────
+  const errRate = level === 'EASY' ? 0.08 : level === 'MEDIUM' ? 0.05 : 0.02;
+  if (Math.random() < errRate)
+    bot.nextDir = DIRS[Math.floor(Math.random() * 4)];
+}
+
 // ─── Game tick ────────────────────────────────────────────────────────────────
 const OPP = { up:'down', down:'up', left:'right', right:'left' };
 
@@ -445,6 +720,16 @@ function gameTick() {
 function tickRoom(room) {
   if (room.gameOver) return;
   room.dirtySet.clear();
+
+  // ── Bot AI: update every BOT_AI_INTERVAL ticks (≈ 5 Hz) ──────────────────
+  room.tickCount = (room.tickCount || 0) + 1;
+  if (room.tickCount % BOT_AI_INTERVAL === 0) {
+    room.botLevel = getBotLevel(room);
+    const now = Date.now();
+    for (const bot of Object.values(room.players))
+      if (bot.isBot && bot.alive && !bot.waiting) updateBotAI(room, bot, now);
+  }
+
   for (const player of Object.values(room.players)) {
     if (!player.alive || player.waiting) continue;
     const inv = isProtected(player);
@@ -544,17 +829,22 @@ function startGameFromLobby(room) {
       teamId = lp.team;
       color  = TEAM_DEF[teamId].color;
     } else {
-      // Solo: assign a unique team ID so each player has distinct territory colour
       teamId = room.nextTeamId;
       room.nextTeamId = (room.nextTeamId % 254) + 1;
       color = lp.color || SOLO_COLOR_DEFAULT;
     }
-    const startElo = getPlayerData(lp.name).elo;
+    // Bots use a fake ELO of 1000 — not stored in eloStore
+    const startElo = lp.isBot ? 1000 : getPlayerData(lp.name).elo;
     const gamePlayer = {
       id: lp.id, name: lp.name, team: teamId, color,
       elo: startElo, startElo, kills: 0, finalRank: 0, spectating: false,
       x:0, y:0, direction:'right', nextDir:'right',
       trail:[], alive:false, waiting:false, inTerritory:true, spawnedAt:0, roomId: room.id,
+      isBot: lp.isBot || false,
+      // Bot AI initial state
+      aiState: 'PATROL', aiStateEnd: Date.now() + 2000 + Math.random() * 3000,
+      capPhase: null, capSteps: 0, capDir: 'right',
+      patTick: 0, patDir: null, atk: null, aiLevel: 'MEDIUM',
     };
     room.players[lp.id] = gamePlayer;
     spawnPlayer(room, gamePlayer);
@@ -621,6 +911,8 @@ io.on('connection', socket => {
     playerRoomId = room.id; playerPhase = 'lobby'; playerNameStr = safeName;
     socket.join(room.id);
     room.lobby.players[socket.id] = { id:socket.id, name:safeName, team:null, ready:false, color:safeColor };
+    // Fill with bots immediately so the human is never waiting alone
+    syncBotsToRoom(room);
     socket.emit('lobbyJoined', { ...lobbySnapshot(room), teamDef:TEAM_DEF, isRanked,
       elo: getPlayerData(safeName).elo });
     broadcastLobbyUpdate(room);
@@ -694,8 +986,15 @@ io.on('connection', socket => {
       // Lobby-phase cleanup
       if (room.lobby?.players[socket.id]) {
         delete room.lobby.players[socket.id];
-        // Cancel countdown if too few players remain
-        if (Object.keys(room.lobby.players).length < 2) room.lobby.countdownAt = null;
+        // Re-sync bots to maintain target entity count (human left → bots adjust)
+        if (room.phase === 'lobby') syncBotsToRoom(room);
+        // Cancel countdown if human count is now 0 (pure-bot lobby makes no sense)
+        const humanCount = Object.values(room.lobby.players).filter(p => !p.isBot).length;
+        if (humanCount === 0) {
+          room.lobby.countdownAt = null;
+          // Remove all bots too so room is truly empty (will be GC'd in 30 s)
+          for (const id of Object.keys(room.lobby.players)) delete room.lobby.players[id];
+        }
         broadcastLobbyUpdate(room);
       }
       socket.leave(room.id);
