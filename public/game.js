@@ -1,7 +1,32 @@
 // ─── Zone.io — client ─────────────────────────────────────────────────────────
 'use strict';
 
+// ─── DOM integrity monitor ────────────────────────────────────────────────────
+(function() {
+  const _obs = new MutationObserver(mutations => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        const tag = node.tagName && node.tagName.toUpperCase();
+        if (tag === 'SCRIPT' || tag === 'IFRAME' || tag === 'OBJECT' || tag === 'EMBED') {
+          // Only flag dynamically-injected elements (not our own game script)
+          if (!node.dataset.zoneInternal) {
+            console.warn('[Security] Suspicious element injected:', tag, node.src || node.innerHTML.slice(0, 40));
+            try {
+              // Report to server without crashing the game
+              const _s = window.__zoneSocket;
+              if (_s && _s.connected) _s.emit('securityAlert', { type: 'dom', detail: tag });
+            } catch(_) {}
+          }
+        }
+      }
+    }
+  });
+  _obs.observe(document.documentElement, { childList: true, subtree: true });
+})();
+
 const socket = io();
+window.__zoneSocket = socket; // referenced by DOM integrity monitor
 
 // ─── Solo colour palette (must match server whitelist) ────────────────────────
 const SOLO_COLORS = [
@@ -30,6 +55,11 @@ let isRanked = true;
 let isTeam   = false;
 let zoneCountdown  = 30;
 let zoneIntervalId = null;
+
+// ─── Spectate state ───────────────────────────────────────────────────────────
+let isSpectating = false;
+let spectateId   = null;
+let lastMode     = null;  // { mode, ranked, color } — for "Play Again"
 
 // teamColorMap: teamId → hex color (built from player state each tick)
 const teamColorMap = {};
@@ -136,6 +166,13 @@ function showScreen(id) {
   document.getElementById(id).classList.add('active');
 }
 
+// ─── Leaderboard button ───────────────────────────────────────────────────────
+document.getElementById('lbBtn').addEventListener('click', () => {
+  const name = nameInput.value.trim();
+  const url = name ? `/leaderboard?name=${encodeURIComponent(name)}` : '/leaderboard';
+  window.open(url, '_blank');
+});
+
 // ─── Login → Mode ─────────────────────────────────────────────────────────────
 nextBtn.addEventListener('click', () => {
   playerName = nameInput.value.trim() || `P${Math.floor(Math.random()*999)}`;
@@ -150,6 +187,7 @@ document.querySelectorAll('.mode-card').forEach(card => {
   card.addEventListener('click', () => {
     const mode   = card.dataset.mode;
     const ranked = card.dataset.ranked === 'true';
+    lastMode = { mode, ranked, color: selectedColor };
     if (mode === 'solo') {
       socket.emit('join', { name: playerName, mode: 'solo', ranked, color: selectedColor });
     } else {
@@ -258,7 +296,7 @@ function updateLobbyButtonStates(teams) {
 // ─── Input ────────────────────────────────────────────────────────────────────
 let lastDir = 'right';
 function sendDir(dir) {
-  if (!myId || !players[myId]?.alive) return;
+  if (!myId || !players[myId]?.alive || isSpectating) return;
   if (dir === lastDir) return;
   lastDir = dir; socket.emit('direction', dir);
 }
@@ -325,7 +363,103 @@ function updateLeaderboard() {
 }
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// ─── All overlay IDs we need to hide when resetting state ────────────────────
+const OVERLAY_IDS = ['deathOverlay', 'victoryOverlay', 'gameEndOverlay'];
+
+function hideAllOverlays() {
+  OVERLAY_IDS.forEach(id => document.getElementById(id).classList.add('hidden'));
+  document.getElementById('spectateHUD').classList.add('hidden');
+}
+
+// ─── Spectate helpers ─────────────────────────────────────────────────────────
+function updateSpectateHUD() {
+  const p = spectateId ? players[spectateId] : null;
+  if (!p) return;
+  document.getElementById('spectateName').textContent = esc(p.name);
+  const eloEl = document.getElementById('spectateEloVal');
+  if (isRanked) { eloEl.textContent = `ELO ${p.elo}`; eloEl.style.display = ''; }
+  else eloEl.style.display = 'none';
+}
+
+function enterSpectate() {
+  // Pick the first alive player that is not ourselves
+  const alive = Object.values(players).filter(p => p.alive && !p.waiting && p.id !== myId);
+  if (!alive.length) return; // nobody to watch — keep death screen open
+  isSpectating = true;
+  spectateId   = alive[0].id;
+  document.getElementById('deathOverlay').classList.add('hidden');
+  document.getElementById('spectateHUD').classList.remove('hidden');
+  updateSpectateHUD();
+}
+
+// ─── Leave to menu — emits returnToMenu to server then resets client ──────────
+function leaveToMenu() {
+  socket.emit('returnToMenu');
+  // Reset all local game state
+  myId = null; players = {}; grid = null;
+  isSpectating = false; spectateId = null;
+  clearInterval(zoneIntervalId);
+  hideAllOverlays();
+  showScreen('modeScreen');
+}
+
+// Click on canvas → cycle through alive spectate targets
+canvas.addEventListener('click', () => {
+  if (!isSpectating) return;
+  const alive = Object.values(players).filter(p => p.alive && !p.waiting && p.id !== myId);
+  if (!alive.length) return;
+  const idx  = alive.findIndex(p => p.id === spectateId);
+  spectateId = alive[(idx + 1) % alive.length].id;
+  updateSpectateHUD();
+});
+
+// ─── Overlay button wiring ────────────────────────────────────────────────────
+document.getElementById('spectateBtn')    .addEventListener('click', enterSpectate);
+document.getElementById('deathMenuBtn')   .addEventListener('click', leaveToMenu);
+document.getElementById('spectateMenuBtn').addEventListener('click', leaveToMenu);
+document.getElementById('victoryMenuBtn') .addEventListener('click', leaveToMenu);
+document.getElementById('gameEndMenuBtn') .addEventListener('click', leaveToMenu);
+document.getElementById('replayBtn').addEventListener('click', () => {
+  // Emit returnToMenu so server cleans up, then re-join same mode
+  socket.emit('returnToMenu');
+  myId = null; players = {}; grid = null;
+  isSpectating = false; spectateId = null;
+  clearInterval(zoneIntervalId);
+  hideAllOverlays();
+  if (lastMode?.mode === 'solo') {
+    socket.emit('join', { name: playerName, mode: 'solo', ranked: lastMode.ranked, color: lastMode.color });
+  } else if (lastMode?.mode === 'team') {
+    socket.emit('joinLobby', { name: playerName, ranked: lastMode.ranked });
+  } else {
+    showScreen('modeScreen');
+  }
+});
+
 // ─── Socket events ────────────────────────────────────────────────────────────
+
+// Kicked / banned by server
+socket.on('kicked', data => {
+  myId = null; players = {}; grid = null; isSpectating = false; spectateId = null;
+  clearInterval(zoneIntervalId);
+  hideAllOverlays();
+  showScreen('loginScreen');
+  const until = data.until ? ` until ${new Date(data.until).toLocaleTimeString()}` : '';
+  const msg   = data.banned
+    ? `🚫 You have been temporarily banned${until}.\nReason: ${data.reason}`
+    : `⚠️ You were disconnected.\nReason: ${data.reason}`;
+  // Use a non-blocking toast instead of alert
+  const el = document.createElement('div');
+  el.textContent = msg.replace('\n', ' — ');
+  Object.assign(el.style, {
+    position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)',
+    background: data.banned ? '#c0392b' : '#e67e22',
+    color:'#fff', padding:'14px 24px', borderRadius:'10px', fontSize:'14px',
+    fontWeight:'700', zIndex:'9999', maxWidth:'90vw', textAlign:'center',
+    boxShadow:'0 4px 20px rgba(0,0,0,0.5)',
+  });
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+});
 
 // Solo game init
 socket.on('init', data => {
@@ -379,14 +513,77 @@ socket.on('tick', data => {
 socket.on('zoneUpdate', data => { zone = data.zone; startZoneCountdown(data.timeToShrink); });
 socket.on('playerJoined', p => { setTeamColor(p.team, p.color); players[p.id] = p; });
 socket.on('playerLeft',   d => { delete players[d.id]; });
-socket.on('died', data => {
-  const eloText = isRanked ? `  ELO: ${data.elo}` : '';
-  deathMsg.textContent = data.killedBy==='zone'
-    ? `Eliminated by the safe-zone!${eloText}`
-    : `Eliminated by ${data.killedBy}!${eloText}`;
-  deathOverlay.classList.remove('hidden'); lastDir='right';
+// ── playerDied — server confirmed this client is dead (Battle Royale, no respawn)
+socket.on('playerDied', data => {
+  // data: { killer, eloChange, finalRank, totalPlayers, kills, ranked }
+
+  // Stop any lingering input
+  isSpectating = false;
+  lastDir = 'right';
+
+  // Cause line
+  deathMsg.textContent = data.killer === 'zone'
+    ? 'Eliminé par la zone dangereuse'
+    : `Eliminé par ${data.killer}`;
+
+  // ELO delta
+  const eloWrap = document.getElementById('deathEloWrap');
+  const eloEl   = document.getElementById('deathEloChange');
+  if (data.ranked && data.eloChange !== undefined) {
+    const delta = data.eloChange;
+    eloEl.textContent = delta >= 0 ? `+${delta}` : `${delta}`;
+    eloEl.className   = 'stat-val ' + (delta >= 0 ? 'pos' : 'neg');
+    eloWrap.style.display = '';
+  } else {
+    eloWrap.style.display = 'none';
+  }
+
+  document.getElementById('deathRank').textContent  = `#${data.finalRank} / ${data.totalPlayers}`;
+  document.getElementById('deathKills').textContent = data.kills;
+
+  // Show death screen — never auto-dismiss, player must click SPECTATE or MENU
+  hideAllOverlays();           // clear any leftover overlay
+  deathOverlay.classList.remove('hidden');
 });
-socket.on('respawned', () => deathOverlay.classList.add('hidden'));
+
+// ── gameOver — match has ended
+socket.on('gameOver', data => {
+  clearInterval(zoneIntervalId);
+  const wasSpectating = isSpectating;
+  isSpectating = false;
+  document.getElementById('spectateHUD').classList.add('hidden');
+
+  if (data.won) {
+    // ── Victory screen ───────────────────────────────────────────────────────
+    document.getElementById('victoryKills').textContent = data.kills;
+    document.getElementById('victoryTerr').textContent  = data.territory || 0;
+
+    const eloWrapV = document.getElementById('victoryEloWrap');
+    const eloValV  = document.getElementById('victoryEloVal');
+    if (isRanked) {
+      eloValV.textContent    = data.elo;
+      eloWrapV.style.display = '';
+    } else {
+      eloWrapV.style.display = 'none';
+    }
+    const eloGained = data.elo - (players[myId]?.startElo ?? data.elo);
+    document.getElementById('victoryMsg').textContent =
+      isRanked && eloGained > 0 ? `+${eloGained} ELO ce match` : '';
+
+    document.getElementById('deathOverlay').classList.add('hidden');
+    document.getElementById('victoryOverlay').classList.remove('hidden');
+
+  } else if (wasSpectating) {
+    // ── Game-end for spectators ──────────────────────────────────────────────
+    const winner = Object.values(players).find(p => p.alive && !p.waiting);
+    document.getElementById('gameEndMsg').textContent =
+      winner ? `${esc(winner.name)} remporte la partie !` : 'Partie terminée.';
+    document.getElementById('gameEndOverlay').classList.remove('hidden');
+
+  }
+  // If death screen is showing (player died then game ended before they clicked anything),
+  // keep it — they still have MENU and SPECTATE buttons available.
+});
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 function showToast(msg, color='#3498db') {
@@ -405,10 +602,21 @@ function showToast(msg, color='#3498db') {
 
 // ─── Camera ───────────────────────────────────────────────────────────────────
 function updateCamera() {
-  const me = players[myId];
-  if (!me || !me.alive) return;
-  cam.x += (me.x*CELL - canvas.width/2  + CELL/2 - cam.x) * 0.12;
-  cam.y += (me.y*CELL - canvas.height/2 + CELL/2 - cam.y) * 0.12;
+  let target = null;
+  if (isSpectating) {
+    // Auto-switch to an alive player if current target died
+    if (!players[spectateId]?.alive) {
+      const next = Object.values(players).find(p => p.alive && !p.waiting);
+      if (next) { spectateId = next.id; updateSpectateHUD(); }
+    }
+    target = players[spectateId];
+  } else {
+    const me = players[myId];
+    if (me?.alive) target = me;
+  }
+  if (!target) return;
+  cam.x += (target.x*CELL - canvas.width/2  + CELL/2 - cam.x) * 0.12;
+  cam.y += (target.y*CELL - canvas.height/2 + CELL/2 - cam.y) * 0.12;
 }
 
 // ─── Minimap ─────────────────────────────────────────────────────────────────

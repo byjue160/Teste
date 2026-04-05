@@ -2,17 +2,50 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const fs   = require('fs');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Leaderboard page route
+app.get('/leaderboard', (_req, res) =>
+  res.sendFile(path.join(__dirname, 'public', 'leaderboard.html'))
+);
+
+// ─── Admin routes (password-protected) ───────────────────────────────────────
+function adminAuth(req, res) {
+  const pass = req.query.password || req.headers['x-admin-password'];
+  if (pass !== ADMIN_PASS) { res.status(401).json({ error: 'Unauthorized' }); return false; }
+  return true;
+}
+
+app.get('/admin/bans', (req, res) => {
+  if (!adminAuth(req, res)) return;
+  const now  = Date.now();
+  const list = Object.entries(banStore).map(([ip, e]) => ({
+    ip,
+    kickCount:   e.kickCount || 0,
+    isBanned:    !!(e.bannedUntil && now < e.bannedUntil),
+    bannedUntil: e.bannedUntil ? new Date(e.bannedUntil).toISOString() : null,
+    recentKicks: (e.kicks || []).slice(-5),
+  })).sort((a, b) => b.kickCount - a.kickCount);
+  res.json({ total: list.length, activeBans: list.filter(x => x.isBanned).length, list });
+});
+
+app.post('/admin/unban', express.json(), (req, res) => {
+  if (!adminAuth(req, res)) return;
+  const { ip } = req.body || {};
+  if (!ip) return res.status(400).json({ error: 'ip required' });
+  if (banStore[ip]) { banStore[ip].bannedUntil = null; banStore[ip].kickCount = 0; saveBans(); }
+  res.json({ ok: true, ip });
+});
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 const GRID_SIZE = 100;
 const TICK_MS = 100;
 const ZONE_SHRINK_INTERVAL = 30000;
-const RESPAWN_DELAY = 3000;
 const START_HALF = 2;
 const SPAWN_INVINCIBILITY_MS = 3000;
 const MIN_TRAIL_FOR_SELF_KILL = 5;
@@ -44,8 +77,114 @@ const SPAWN_ANCHORS_TEAM = {
   3: { x: 84, y: 15 }, 4: { x: 15, y: 84 },
 };
 
-// ─── Global ELO store ─────────────────────────────────────────────────────────
-const eloStore = {};
+// ─── Persistent ELO / stats store ────────────────────────────────────────────
+// Shape: { [playerName]: { elo: number, wins: number, games: number } }
+// wins  = total kills,  games = total deaths (zone or player)
+const DATA_DIR  = path.join(__dirname, 'data');
+const DATA_FILE = path.join(DATA_DIR, 'elo.json');
+let eloStore = {};
+
+function loadEloData() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (fs.existsSync(DATA_FILE)) eloStore = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    console.log(`ELO data loaded (${Object.keys(eloStore).length} players)`);
+  } catch (e) { console.error('ELO load error:', e.message); }
+}
+
+function saveEloData() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(DATA_FILE, JSON.stringify(eloStore, null, 2));
+  } catch (e) { console.error('ELO save error:', e.message); }
+}
+
+function getPlayerData(name) {
+  if (!eloStore[name]) eloStore[name] = { elo: 1000, wins: 0, games: 0 };
+  return eloStore[name];
+}
+
+function getTop100() {
+  return Object.entries(eloStore)
+    .filter(([, d]) => d.games > 0 || d.wins > 0 || d.elo !== 1000)
+    .map(([name, d]) => ({ name, elo: d.elo ?? 1000, wins: d.wins ?? 0, games: d.games ?? 0 }))
+    .sort((a, b) => b.elo - a.elo || b.wins - a.wins)
+    .slice(0, 100);
+}
+
+const LB_ROOM = 'lb-viewers';
+function broadcastLeaderboard() {
+  io.to(LB_ROOM).emit('leaderboardUpdate', getTop100());
+}
+
+loadEloData();
+setInterval(saveEloData, 60_000); // persist every minute
+
+// ─── Security / Anti-cheat ────────────────────────────────────────────────────
+const BAN_FILE       = path.join(DATA_DIR, 'bans.json');
+const ADMIN_PASS     = process.env.ADMIN_PASSWORD || 'zone-admin-secret';
+const RATE_LIMIT_MAX = 60;   // max Socket.io messages per second per socket
+const KICK_MAX       = 3;    // kicks before 1-hour ban
+
+// banStore: { [ip]: { kickCount, bannedUntil, kicks:[{name,reason,ts}] } }
+let banStore = {};
+
+function loadBans() {
+  try {
+    if (fs.existsSync(BAN_FILE)) banStore = JSON.parse(fs.readFileSync(BAN_FILE, 'utf8'));
+    console.log(`Ban data loaded (${Object.keys(banStore).length} IPs)`);
+  } catch(e) { console.error('Ban load error:', e.message); }
+}
+function saveBans() {
+  try { fs.writeFileSync(BAN_FILE, JSON.stringify(banStore, null, 2)); }
+  catch(e) { console.error('Ban save error:', e.message); }
+}
+
+function getIp(socket) {
+  return (socket.handshake.headers['x-forwarded-for'] || '').split(',')[0].trim()
+      || socket.handshake.address || 'unknown';
+}
+
+function isIpBanned(ip) {
+  const e = banStore[ip];
+  if (!e?.bannedUntil) return false;
+  if (Date.now() < e.bannedUntil) return true;
+  e.bannedUntil = null; e.kickCount = 0; saveBans(); // expired
+  return false;
+}
+
+function kickSocket(socket, reason, name = '?') {
+  const ip = getIp(socket);
+  const ts = new Date().toISOString();
+  console.warn(`[KICK] ${ts} ip=${ip} name=${name} reason="${reason}"`);
+
+  const e = banStore[ip] || { kickCount: 0, bannedUntil: null, kicks: [] };
+  e.kicks.push({ name, reason, ts });
+  if (e.kicks.length > 50) e.kicks = e.kicks.slice(-50);
+  e.kickCount = (e.kickCount || 0) + 1;
+
+  if (e.kickCount >= KICK_MAX) {
+    e.bannedUntil = Date.now() + 3_600_000; // 1 h
+    console.warn(`[BAN]  ${ts} ip=${ip} banned 1 h (kick #${e.kickCount})`);
+    socket.emit('kicked', { reason, banned: true, until: e.bannedUntil });
+  } else {
+    socket.emit('kicked', { reason, banned: false });
+  }
+  banStore[ip] = e; saveBans();
+  socket.disconnect(true);
+}
+
+// Name sanitisation: strip HTML/injection chars, control chars, max 15 chars
+function sanitizeName(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/[<>&"'`\\]/g, '')
+    .replace(/[\x00-\x1F\x7F]/g, '')
+    .trim().slice(0, 15);
+}
+
+loadBans();
+setInterval(saveBans, 60_000);
 
 // ─── Room factory ─────────────────────────────────────────────────────────────
 // roomId = 'solo-ranked' | 'solo-chill' | 'team-ranked' | 'team-chill'
@@ -69,6 +208,8 @@ function createRoom(roomId) {
     zonePhaseIdx: 0, nextShrinkAt: null, gameStartedAt: null,
     players: {},      // active game players
     nextTeamId: 1,    // counter for unique solo team IDs
+    gameOver: false,
+    peakPlayers: 0,
   };
 }
 
@@ -164,10 +305,15 @@ function captureTerritory(room, player) {
   player.trail = []; player.inTerritory = true;
 }
 
-// ─── Kill / respawn ───────────────────────────────────────────────────────────
+// ─── Kill — Battle Royale (no respawn ever) ───────────────────────────────────
 function killPlayer(room, player, killer) {
   if (!player.alive) return;
-  player.trail = []; player.alive = false;
+
+  // Mark dead immediately — nothing else in this codebase resets alive to true
+  player.trail      = [];
+  player.alive      = false;
+  player.spectating = true;   // server-side spectator flag
+
   const hasTeammate = Object.values(room.players).some(
     p => p.id !== player.id && p.team === player.team && p.alive
   );
@@ -175,14 +321,78 @@ function killPlayer(room, player, killer) {
     for (let i = 0; i < room.grid.length; i++)
       if (room.grid[i] === player.team) { room.grid[i] = 0; room.dirtySet.add(i); }
   }
+
+  // Rank = surviving players after this death + 1
+  const aliveAfter = Object.values(room.players).filter(p => p.alive && !p.waiting).length;
+  const total      = Object.keys(room.players).length;
+  player.finalRank = aliveAfter + 1;
+
+  let eloChange = 0;
   if (room.isRanked) {
-    player.elo = Math.max(0, player.elo - 20); eloStore[player.name] = player.elo;
-    if (killer && killer.id !== player.id) { killer.elo += 25; eloStore[killer.name] = killer.elo; }
+    const vData = getPlayerData(player.name);
+    vData.games++;
+    eloChange   = -Math.min(20, vData.elo);
+    vData.elo   = Math.max(0, vData.elo - 20);
+    player.elo  = vData.elo;
+    if (killer && killer.id !== player.id) {
+      const kData  = getPlayerData(killer.name);
+      kData.wins++;
+      kData.elo   += 25;
+      killer.elo   = kData.elo;
+      killer.kills = (killer.kills || 0) + 1;
+    }
+    saveEloData();
+    broadcastLeaderboard();
+  } else if (killer && killer.id !== player.id) {
+    killer.kills = (killer.kills || 0) + 1;
   }
-  io.to(player.id).emit('died', { killedBy: killer ? killer.name : 'zone', elo: player.elo, ranked: room.isRanked });
-  setTimeout(() => {
-    if (room.players[player.id]) { spawnPlayer(room, player); io.to(player.id).emit('respawned'); }
-  }, RESPAWN_DELAY);
+
+  // "playerDied" — explicit BR death event (never confused with old "died")
+  io.to(player.id).emit('playerDied', {
+    killer:       killer ? killer.name : 'zone',
+    eloChange,
+    finalRank:    player.finalRank,
+    totalPlayers: total,
+    kills:        player.kills || 0,
+    ranked:       room.isRanked,
+  });
+
+  checkWinCondition(room);
+}
+
+// ─── Win condition ────────────────────────────────────────────────────────────
+function checkWinCondition(room) {
+  if (room.gameOver) return;
+  const total = Object.keys(room.players).length;
+  if (total < 2) return; // single-player room — no winner declared
+  const alive = Object.values(room.players).filter(p => p.alive && !p.waiting);
+
+  let ended = false;
+  if (room.isTeam) {
+    const aliveTeams = new Set(alive.map(p => p.team));
+    ended = aliveTeams.size <= 1;
+  } else {
+    ended = alive.length <= 1;
+  }
+  if (!ended) return;
+
+  room.gameOver = true;
+  // Count territory for winners (snapshot at game end)
+  const tc = {};
+  for (let i = 0; i < room.grid.length; i++) { const t = room.grid[i]; if (t) tc[t] = (tc[t]||0)+1; }
+
+  for (const p of Object.values(room.players)) {
+    const won = alive.some(a => a.id === p.id);
+    io.to(p.id).emit('gameOver', {
+      won,
+      kills: p.kills || 0,
+      elo: p.elo,
+      territory: tc[p.team] || 0,
+      totalPlayers: total,
+    });
+  }
+  // Wipe the room after a grace period so a fresh game can start
+  setTimeout(() => rooms.delete(room.id), 10_000);
 }
 
 // ─── Zone shrink ──────────────────────────────────────────────────────────────
@@ -208,6 +418,7 @@ const OPP = { up:'down', down:'up', left:'right', right:'left' };
 function gameTick() { for (const r of rooms.values()) if (r.phase === 'game') tickRoom(r); }
 
 function tickRoom(room) {
+  if (room.gameOver) return;
   room.dirtySet.clear();
   tryShrinkZone(room);
   for (const player of Object.values(room.players)) {
@@ -275,11 +486,12 @@ function startGameFromLobby(room) {
   // Spawn all lobby players that have a team
   for (const lp of Object.values(room.lobby.players)) {
     if (!lp.team) continue;
+    const startEloLp = getPlayerData(lp.name).elo;
     const gamePlayer = {
       id: lp.id, name: lp.name,
       team: lp.team,
       color: TEAM_DEF[lp.team].color,
-      elo: eloStore[lp.name] || 1000,
+      elo: startEloLp, startElo: startEloLp, kills: 0, finalRank: 0, spectating: false,
       x:0, y:0, direction:'right', nextDir:'right',
       trail:[], alive:false, waiting:false, inTerritory:true, spawnedAt:0,
       roomId: room.id,
@@ -289,6 +501,7 @@ function startGameFromLobby(room) {
   }
   room.gameStartedAt = Date.now();
   room.nextShrinkAt  = room.gameStartedAt + ZONE_SHRINK_INTERVAL;
+  room.peakPlayers   = Object.keys(room.players).length;
   // Send individual init to each lobby player
   for (const lp of Object.values(room.lobby.players)) {
     const sock = io.sockets.sockets.get(lp.id);
@@ -309,31 +522,58 @@ function startGameFromLobby(room) {
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 io.on('connection', socket => {
-  console.log('+ connected:', socket.id);
-  let playerRoomId = null;
-  let playerPhase  = null; // 'lobby' | 'game'
+  const ip = getIp(socket);
+
+  // ── Reject banned IPs immediately ──────────────────────────────────────────
+  if (isIpBanned(ip)) {
+    const ban = banStore[ip];
+    socket.emit('kicked', { reason: 'Temporarily banned.', banned: true, until: ban.bannedUntil });
+    socket.disconnect(true);
+    return;
+  }
+
+  console.log('+ connected:', socket.id, ip);
+  let playerRoomId  = null;
+  let playerPhase   = null;   // 'lobby' | 'game'
+  let playerNameStr = '?';    // for kick-log context
+
+  // ── Rate-limiter wrapper (max RATE_LIMIT_MAX msgs/sec) ─────────────────────
+  const rl = { count: 0, reset: Date.now() + 1000 };
+  function on(event, handler) {
+    socket.on(event, (...args) => {
+      const now = Date.now();
+      if (now >= rl.reset) { rl.count = 1; rl.reset = now + 1000; }
+      else if (++rl.count > RATE_LIMIT_MAX) {
+        kickSocket(socket, `Rate limit exceeded on '${event}'`, playerNameStr);
+        return;
+      }
+      try { handler(...args); }
+      catch(e) { console.error(`[Handler:${event}]`, e.message); }
+    });
+  }
 
   // ── Solo: direct join ──────────────────────────────────────────────────────
-  socket.on('join', ({ name, mode, ranked, color }) => {
-    const safeName  = (name||'').trim().slice(0,15) || `P${Math.floor(Math.random()*999)}`;
-    const isRanked  = ranked === true;
+  on('join', (data) => {
+    if (!data || typeof data !== 'object') return;
+    const safeName  = sanitizeName(data.name) || `P${Math.floor(Math.random()*999)}`;
+    const isRanked  = data.ranked === true;
     const roomId    = `solo-${isRanked?'ranked':'chill'}`;
-    playerRoomId    = roomId; playerPhase = 'game';
+    playerRoomId    = roomId; playerPhase = 'game'; playerNameStr = safeName;
     const room      = getRoom(roomId);
     socket.join(roomId);
-    // Unique team ID per solo player (for distinct territory colour)
     const team = room.nextTeamId;
     room.nextTeamId = (room.nextTeamId % 254) + 1;
-    // Validate colour
-    const safeColor = SOLO_COLORS.has(color) ? color : SOLO_COLOR_DEFAULT;
+    const safeColor = SOLO_COLORS.has(data.color) ? data.color : SOLO_COLOR_DEFAULT;
+    const startElo  = getPlayerData(safeName).elo;
     const player = {
       id: socket.id, name: safeName, team, color: safeColor,
-      elo: eloStore[safeName] || 1000,
+      elo: startElo, startElo, kills: 0, finalRank: 0, spectating: false,
       x:0, y:0, direction:'right', nextDir:'right',
       trail:[], alive:false, waiting:false, inTerritory:true, spawnedAt:0, roomId,
     };
     room.players[socket.id] = player;
     spawnPlayer(room, player);
+    room.peakPlayers = Math.max(room.peakPlayers, Object.keys(room.players).length);
     if (!room.gameStartedAt) { room.gameStartedAt = Date.now(); room.nextShrinkAt = room.gameStartedAt + ZONE_SHRINK_INTERVAL; }
     const pStates = Object.fromEntries(Object.entries(room.players).map(([id,p])=>[id,{
       id:p.id,name:p.name,team:p.team,color:p.color,
@@ -349,42 +589,46 @@ io.on('connection', socket => {
   });
 
   // ── Team: join lobby ───────────────────────────────────────────────────────
-  socket.on('joinLobby', ({ name, ranked }) => {
-    const safeName = (name||'').trim().slice(0,15) || `P${Math.floor(Math.random()*999)}`;
-    const isRanked = ranked === true;
+  on('joinLobby', (data) => {
+    if (!data || typeof data !== 'object') return;
+    const safeName = sanitizeName(data.name) || `P${Math.floor(Math.random()*999)}`;
+    const isRanked = data.ranked === true;
     const roomId   = `team-${isRanked?'ranked':'chill'}`;
-    playerRoomId   = roomId; playerPhase = 'lobby';
+    playerRoomId   = roomId; playerPhase = 'lobby'; playerNameStr = safeName;
     const room     = getRoom(roomId);
     socket.join(roomId);
-    // If game already running, re-enter lobby for next round (player waits)
     room.lobby.players[socket.id] = { id:socket.id, name:safeName, team:null, ready:false, color:null };
     socket.emit('lobbyJoined', { ...lobbySnapshot(room), teamDef:TEAM_DEF, isRanked,
-      elo: eloStore[safeName] || 1000 });
+      elo: getPlayerData(safeName).elo });
     broadcastLobbyUpdate(room);
   });
 
   // ── Team: choose team ──────────────────────────────────────────────────────
-  socket.on('chooseTeam', ({ team }) => {
+  on('chooseTeam', (data) => {
+    if (!data || typeof data !== 'object') return;
+    const team = data.team;
+    // Strict validation: must be integer 1-4
+    if (!Number.isInteger(team) || team < 1 || team > 4) return;
     if (!playerRoomId || playerPhase !== 'lobby') return;
     const room = rooms.get(playerRoomId);
     const lp   = room?.lobby.players[socket.id];
     if (!lp || !TEAM_DEF[team]) return;
-    // Count current members in that team
     const count = Object.values(room.lobby.players).filter(p => p.team === team).length;
-    if (count >= MAX_TEAM_SIZE) return; // full
+    if (count >= MAX_TEAM_SIZE) return;
     lp.team  = team;
     lp.color = TEAM_DEF[team].color;
-    lp.ready = false; // reset ready on team change
+    lp.ready = false;
     broadcastLobbyUpdate(room);
   });
 
   // ── Team: toggle ready ─────────────────────────────────────────────────────
-  socket.on('setReady', ({ ready }) => {
+  on('setReady', (data) => {
+    if (!data || typeof data !== 'object') return;
     if (!playerRoomId || playerPhase !== 'lobby') return;
     const room = rooms.get(playerRoomId);
     const lp   = room?.lobby.players[socket.id];
     if (!lp || !lp.team) return;
-    lp.ready = !!ready;
+    lp.ready = data.ready === true;
     if (room.phase === 'lobby' && checkLobbyReady(room)) {
       startGameFromLobby(room);
     } else {
@@ -393,29 +637,99 @@ io.on('connection', socket => {
   });
 
   // ── Direction ──────────────────────────────────────────────────────────────
-  socket.on('direction', dir => {
+  on('direction', (dir) => {
+    if (typeof dir !== 'string') return;
     const valid = ['up','down','left','right'];
     if (!valid.includes(dir) || !playerRoomId || playerPhase !== 'game') return;
-    const room   = rooms.get(playerRoomId);
-    const player = room?.players[socket.id];
+    const room = rooms.get(playerRoomId);
+    if (!room || room.gameOver) return;
+    const player = room.players[socket.id];
     if (player?.alive && !player.waiting) player.nextDir = dir;
+  });
+
+  // ── Leave game (dead / spectating → back to menu) ─────────────────────────
+  on('leaveGame', () => {
+    if (!playerRoomId) return;
+    const room = rooms.get(playerRoomId);
+    if (room) {
+      const player = room.players[socket.id];
+      if (player) {
+        if (player.alive && !room.gameOver) killPlayer(room, player, null);
+        else if (room.isRanked) { getPlayerData(player.name).elo = player.elo; saveEloData(); }
+        const hasTeammate = Object.values(room.players).some(
+          p => p.id !== socket.id && p.team === player.team && p.alive
+        );
+        if (!hasTeammate) {
+          for (let i = 0; i < room.grid.length; i++)
+            if (room.grid[i] === player.team) { room.grid[i] = 0; room.dirtySet.add(i); }
+        }
+        delete room.players[socket.id];
+        io.to(room.id).emit('playerLeft', { id: socket.id });
+      }
+      if (room.lobby?.players[socket.id]) {
+        delete room.lobby.players[socket.id];
+        broadcastLobbyUpdate(room);
+      }
+      socket.leave(room.id);
+    }
+    playerRoomId = null; playerPhase = null;
+  });
+
+  // ── Return to menu (dead / spectating player navigates back) ─────────────
+  // Identical cleanup logic to leaveGame — kept as a distinct event name for clarity
+  on('returnToMenu', () => {
+    if (!playerRoomId) return;
+    const room = rooms.get(playerRoomId);
+    if (room) {
+      const player = room.players[socket.id];
+      if (player) {
+        // Player should already be dead; if somehow alive (e.g. rage-quit), kill first
+        if (player.alive && !room.gameOver) killPlayer(room, player, null);
+        else if (room.isRanked) { getPlayerData(player.name).elo = player.elo; saveEloData(); }
+        const hasTeammate = Object.values(room.players).some(
+          p => p.id !== socket.id && p.team === player.team && p.alive
+        );
+        if (!hasTeammate) {
+          for (let i = 0; i < room.grid.length; i++)
+            if (room.grid[i] === player.team) { room.grid[i] = 0; room.dirtySet.add(i); }
+        }
+        delete room.players[socket.id];
+        io.to(room.id).emit('playerLeft', { id: socket.id });
+      }
+      if (room.lobby?.players[socket.id]) {
+        delete room.lobby.players[socket.id];
+        broadcastLobbyUpdate(room);
+      }
+      socket.leave(room.id);
+    }
+    playerRoomId = null; playerPhase = null;
+  });
+
+  // ── Leaderboard room ───────────────────────────────────────────────────────
+  on('joinLeaderboard', () => {
+    socket.join(LB_ROOM);
+    socket.emit('leaderboardUpdate', getTop100());
+  });
+
+  // ── Security alert from client (DOM injection detected) ───────────────────
+  on('securityAlert', (data) => {
+    if (!data || typeof data !== 'object') return;
+    console.warn(`[SECURITY] ip=${ip} name=${playerNameStr} type=${data.type || '?'} detail=${String(data.detail || '').slice(0,80)}`);
   });
 
   // ── Disconnect ─────────────────────────────────────────────────────────────
   socket.on('disconnect', () => {
-    console.log('- disconnected:', socket.id);
+    console.log('- disconnected:', socket.id, ip);
     if (!playerRoomId) return;
     const room = rooms.get(playerRoomId);
     if (!room) return;
-    // Remove from lobby if present
     if (room.lobby.players[socket.id]) {
       delete room.lobby.players[socket.id];
       broadcastLobbyUpdate(room);
     }
-    // Remove from game if present
     const player = room.players[socket.id];
     if (player) {
-      if (room.isRanked) eloStore[player.name] = player.elo;
+      if (room.isRanked) { getPlayerData(player.name).elo = player.elo; saveEloData(); }
       const hasTeammate = Object.values(room.players).some(
         p => p.id !== socket.id && p.team === player.team && p.alive
       );

@@ -44,3 +44,7 @@
 node_modules/
 npm-debug.log
 .env
+
+# Persistent data (keep directory, not content)
+data/elo.json
+data/bans.json

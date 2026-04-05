@@ -18,6 +18,9 @@
                placeholder="Your name…" autocomplete="off" spellcheck="false">
         <button id="nextBtn">NEXT →</button>
       </div>
+      <div class="lb-link-row">
+        <button id="lbBtn" class="lb-link-btn">🏆 Global Leaderboard</button>
+      </div>
       <div class="howto">
         <h3>How to Play</h3>
         <ul>
@@ -191,14 +194,80 @@
       <div id="lbRows"></div>
     </div>
 
-    <!-- Death overlay -->
+    <!-- Death screen -->
     <div id="deathOverlay" class="overlay hidden">
-      <div class="overlay-box">
+      <div class="overlay-box death-box">
         <div class="skull">☠</div>
         <h2>YOU DIED</h2>
         <p id="deathMsg"></p>
-        <div class="spinner"></div>
-        <p class="respawn-txt">Respawning in 3s…</p>
+        <div class="stat-row">
+          <div class="stat-item" id="deathEloWrap">
+            <div id="deathEloChange" class="stat-val">—</div>
+            <div class="stat-lbl">ELO</div>
+          </div>
+          <div class="stat-item">
+            <div id="deathRank" class="stat-val">—</div>
+            <div class="stat-lbl">RANK</div>
+          </div>
+          <div class="stat-item">
+            <div id="deathKills" class="stat-val">0</div>
+            <div class="stat-lbl">KILLS</div>
+          </div>
+        </div>
+        <div class="ovl-btns">
+          <button id="spectateBtn"  class="ovl-btn ovl-secondary">👁 SPECTATE</button>
+          <button id="deathMenuBtn" class="ovl-btn ovl-primary">← MENU</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Spectate HUD (shown while spectating, over the canvas) -->
+    <div id="spectateHUD" class="spec-hud hidden">
+      <div class="spec-info">
+        <span class="spec-label">SPECTATING</span>
+        <span id="spectateName" class="spec-name">—</span>
+        <span id="spectateEloVal" class="spec-elo"></span>
+      </div>
+      <span class="spec-hint">Click canvas to change player</span>
+      <button id="spectateMenuBtn" class="ovl-btn ovl-primary ovl-sm">← MENU</button>
+    </div>
+
+    <!-- Victory screen -->
+    <div id="victoryOverlay" class="overlay hidden">
+      <div class="overlay-box victory-box">
+        <div class="trophy">🏆</div>
+        <h2>VICTORY!</h2>
+        <p id="victoryMsg"></p>
+        <div class="stat-row">
+          <div class="stat-item">
+            <div id="victoryKills" class="stat-val">0</div>
+            <div class="stat-lbl">KILLS</div>
+          </div>
+          <div class="stat-item">
+            <div id="victoryTerr" class="stat-val">0</div>
+            <div class="stat-lbl">TERRITORY</div>
+          </div>
+          <div class="stat-item" id="victoryEloWrap">
+            <div id="victoryEloVal" class="stat-val gold">—</div>
+            <div class="stat-lbl">ELO</div>
+          </div>
+        </div>
+        <div class="ovl-btns">
+          <button id="replayBtn"      class="ovl-btn ovl-green">▶ PLAY AGAIN</button>
+          <button id="victoryMenuBtn" class="ovl-btn ovl-primary">← MENU</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Game-end screen (shown to spectators when match ends) -->
+    <div id="gameEndOverlay" class="overlay hidden">
+      <div class="overlay-box">
+        <div class="skull" style="color:#888">🎮</div>
+        <h2 style="color:#aaa">GAME OVER</h2>
+        <p id="gameEndMsg" style="color:#666"></p>
+        <div class="ovl-btns">
+          <button id="gameEndMenuBtn" class="ovl-btn ovl-primary">← MENU</button>
+        </div>
       </div>
     </div>
 
