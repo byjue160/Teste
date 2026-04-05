@@ -28,6 +28,32 @@
 const socket = io();
 window.__zoneSocket = socket; // referenced by DOM integrity monitor
 
+// ─── Keyboard layout (AZERTY / QWERTY) ───────────────────────────────────────
+let keyLayout = localStorage.getItem('keyboardLayout') || 'qwerty';
+
+function applyLayoutUI() {
+  document.querySelectorAll('.kb-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.layout === keyLayout);
+  });
+  // Update "How to Play" move hint
+  const howtoMove = document.getElementById('howtoMove');
+  if (howtoMove) {
+    if (keyLayout === 'azerty') {
+      howtoMove.innerHTML = '<kbd>Z Q S D</kbd> ou <kbd>↑ ← ↓ →</kbd> pour se déplacer';
+    } else {
+      howtoMove.innerHTML = '<kbd>W A S D</kbd> or <kbd>↑ ← ↓ →</kbd> to move';
+    }
+  }
+}
+document.querySelectorAll('.kb-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    keyLayout = btn.dataset.layout;
+    localStorage.setItem('keyboardLayout', keyLayout);
+    applyLayoutUI();
+  });
+});
+applyLayoutUI(); // apply on page load
+
 // ─── Solo colour palette (must match server whitelist) ────────────────────────
 const SOLO_COLORS = [
   { hex: '#e74c3c', name: 'Rouge'      },
@@ -344,32 +370,150 @@ function updateLobbyButtonStates(data) {
   }
 }
 
-// ─── Input ────────────────────────────────────────────────────────────────────
+// ─── Input system ─────────────────────────────────────────────────────────────
 let lastDir = 'right';
+const keysHeld = {};       // key → true while held
+let _indicatorTimer = null;
+
+/** Map a KeyboardEvent.key to a game direction based on current layout. */
+function keyToDir(key) {
+  // Arrow keys always work regardless of layout
+  if (key === 'ArrowUp')    return 'up';
+  if (key === 'ArrowDown')  return 'down';
+  if (key === 'ArrowLeft')  return 'left';
+  if (key === 'ArrowRight') return 'right';
+  if (keyLayout === 'azerty') {
+    if (key === 'z' || key === 'Z') return 'up';
+    if (key === 'q' || key === 'Q') return 'left';
+    if (key === 's' || key === 'S') return 'down';
+    if (key === 'd' || key === 'D') return 'right';
+  } else {
+    if (key === 'w' || key === 'W') return 'up';
+    if (key === 'a' || key === 'A') return 'left';
+    if (key === 's' || key === 'S') return 'down';
+    if (key === 'd' || key === 'D') return 'right';
+  }
+  return null;
+}
+
+/** Send direction to server + update indicator. Only emits on actual change. */
 function sendDir(dir) {
+  showInputIndicator(dir);
   if (!myId || !players[myId]?.alive || isSpectating) return;
   if (dir === lastDir) return;
-  lastDir = dir; socket.emit('direction', dir);
+  lastDir = dir;
+  socket.emit('direction', dir);
 }
+
+// ── Direction indicator (bottom-left) ────────────────────────────────────────
+const _indEl = document.getElementById('inputIndicator');
+const _dirSym = { up: '▲ Up', down: '▼ Down', left: '◄ Left', right: '► Right' };
+function showInputIndicator(dir) {
+  if (!_indEl) return;
+  _indEl.textContent = _dirSym[dir] || '';
+  _indEl.classList.remove('hidden');
+  clearTimeout(_indicatorTimer);
+  _indicatorTimer = setTimeout(() => _indEl.classList.add('hidden'), 2000);
+}
+
+// ── Keyboard events ───────────────────────────────────────────────────────────
+const _GAME_KEYS = new Set([
+  'ArrowUp','ArrowDown','ArrowLeft','ArrowRight',
+  'w','W','a','A','s','S','d','D','z','Z','q','Q',' ',
+]);
+
 window.addEventListener('keydown', e => {
-  switch (e.key) {
-    case 'ArrowUp':    case 'w': case 'W': sendDir('up');    break;
-    case 'ArrowDown':  case 's': case 'S': sendDir('down');  break;
-    case 'ArrowLeft':  case 'a': case 'A': sendDir('left');  break;
-    case 'ArrowRight': case 'd': case 'D': sendDir('right'); break;
+  const inGame = gameScreen.classList.contains('active');
+
+  // F5: confirm before reload during a live game
+  if (e.key === 'F5' && inGame && myId) {
+    e.preventDefault();
+    if (!confirm('Quitter la partie ?')) return;
+    return;
   }
+
+  // Prevent browser scroll / zoom for game keys while in-game
+  if (inGame && _GAME_KEYS.has(e.key)) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  const dir = keyToDir(e.key);
+  if (!dir) return;
+  // last-key-wins: only send if this key is not already the active direction
+  const alreadyHeld = keysHeld[e.key];
+  keysHeld[e.key] = true;
+  if (!alreadyHeld) sendDir(dir);
+}, { passive: false });
+
+window.addEventListener('keyup', e => {
+  keysHeld[e.key] = false;
+}, { passive: false });
+
+// Reset held keys when window loses focus to prevent stuck keys
+window.addEventListener('blur', () => {
+  for (const k of Object.keys(keysHeld)) keysHeld[k] = false;
 });
-document.querySelectorAll('.dp-btn').forEach(btn => {
-  btn.addEventListener('touchstart', e => { e.preventDefault(); sendDir(btn.dataset.dir); }, { passive:false });
-  btn.addEventListener('click', () => sendDir(btn.dataset.dir));
-});
-let sx=0, sy=0;
-canvas.addEventListener('touchstart', e => { sx=e.touches[0].clientX; sy=e.touches[0].clientY; }, {passive:true});
-canvas.addEventListener('touchend', e => {
-  const dx=e.changedTouches[0].clientX-sx, dy=e.changedTouches[0].clientY-sy;
-  if (Math.abs(dx)>20||Math.abs(dy)>20)
-    sendDir(Math.abs(dx)>Math.abs(dy) ? (dx>0?'right':'left') : (dy>0?'down':'up'));
-}, {passive:true});
+
+// ── Mobile detection + D-pad ─────────────────────────────────────────────────
+const isMobile = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+const dpadEl   = document.getElementById('dpad');
+
+if (isMobile && dpadEl) {
+  dpadEl.style.display = 'grid';
+  // Hide keyboard instructions on mobile
+  document.querySelectorAll('.kb-instructions').forEach(el => el.style.display = 'none');
+}
+
+/** Calculate direction from touch position relative to D-pad center. */
+function _dpadDir(touch) {
+  const rect = dpadEl.getBoundingClientRect();
+  const cx = rect.left + rect.width  / 2;
+  const cy = rect.top  + rect.height / 2;
+  const dx = touch.clientX - cx;
+  const dy = touch.clientY - cy;
+  return Math.abs(dx) >= Math.abs(dy)
+    ? (dx > 0 ? 'right' : 'left')
+    : (dy > 0 ? 'down'  : 'up');
+}
+
+/** Visually highlight the active D-pad button. */
+function _dpadHighlight(dir) {
+  document.querySelectorAll('.dp-btn').forEach(b => {
+    b.classList.toggle('pressed', b.dataset.dir === dir);
+  });
+}
+
+if (dpadEl) {
+  let _dpadTouch = false;
+
+  dpadEl.addEventListener('touchstart', e => {
+    e.preventDefault();
+    _dpadTouch = true;
+    const dir = _dpadDir(e.touches[0]);
+    _dpadHighlight(dir);
+    sendDir(dir);
+  }, { passive: false });
+
+  dpadEl.addEventListener('touchmove', e => {
+    e.preventDefault();
+    if (!_dpadTouch) return;
+    const dir = _dpadDir(e.touches[0]);
+    _dpadHighlight(dir);
+    sendDir(dir);
+  }, { passive: false });
+
+  dpadEl.addEventListener('touchend', e => {
+    e.preventDefault();
+    _dpadTouch = false;
+    document.querySelectorAll('.dp-btn').forEach(b => b.classList.remove('pressed'));
+  }, { passive: false });
+
+  dpadEl.addEventListener('touchcancel', e => {
+    _dpadTouch = false;
+    document.querySelectorAll('.dp-btn').forEach(b => b.classList.remove('pressed'));
+  }, { passive: false });
+}
 
 // ─── HUD ─────────────────────────────────────────────────────────────────────
 function updateHUD() {
@@ -440,6 +584,9 @@ function leaveToMenu() {
   socket.emit('returnToMenu');
   myId = null; players = {}; grid = null;
   isSpectating = false; spectateId = null;
+  lastDir = 'right';
+  for (const k of Object.keys(keysHeld)) keysHeld[k] = false;
+  if (_indEl) _indEl.classList.add('hidden');
   stopLobbyCountdown();
   hideAllOverlays();
   showScreen('modeScreen');
@@ -554,6 +701,7 @@ socket.on('playerDied', data => {
   // Stop any lingering input
   isSpectating = false;
   lastDir = 'right';
+  for (const k of Object.keys(keysHeld)) keysHeld[k] = false;
 
   // Cause line
   deathMsg.textContent = data.killer === 'zone'
