@@ -363,42 +363,50 @@ function updateLeaderboard() {
 }
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// ─── All overlay IDs we need to hide when resetting state ────────────────────
+const OVERLAY_IDS = ['deathOverlay', 'victoryOverlay', 'gameEndOverlay'];
+
+function hideAllOverlays() {
+  OVERLAY_IDS.forEach(id => document.getElementById(id).classList.add('hidden'));
+  document.getElementById('spectateHUD').classList.add('hidden');
+}
+
 // ─── Spectate helpers ─────────────────────────────────────────────────────────
 function updateSpectateHUD() {
-  const p = players[spectateId];
+  const p = spectateId ? players[spectateId] : null;
   if (!p) return;
-  document.getElementById('spectateName').textContent = p.name;
+  document.getElementById('spectateName').textContent = esc(p.name);
   const eloEl = document.getElementById('spectateEloVal');
   if (isRanked) { eloEl.textContent = `ELO ${p.elo}`; eloEl.style.display = ''; }
   else eloEl.style.display = 'none';
 }
 
 function enterSpectate() {
+  // Pick the first alive player that is not ourselves
+  const alive = Object.values(players).filter(p => p.alive && !p.waiting && p.id !== myId);
+  if (!alive.length) return; // nobody to watch — keep death screen open
   isSpectating = true;
+  spectateId   = alive[0].id;
   document.getElementById('deathOverlay').classList.add('hidden');
-  const alive = Object.values(players).filter(p => p.alive && !p.waiting);
-  if (alive.length) spectateId = alive[0].id;
   document.getElementById('spectateHUD').classList.remove('hidden');
   updateSpectateHUD();
 }
 
-// ─── Leave-to-menu ────────────────────────────────────────────────────────────
+// ─── Leave to menu — emits returnToMenu to server then resets client ──────────
 function leaveToMenu() {
-  socket.emit('leaveGame');
+  socket.emit('returnToMenu');
+  // Reset all local game state
   myId = null; players = {}; grid = null;
   isSpectating = false; spectateId = null;
   clearInterval(zoneIntervalId);
-  ['deathOverlay','victoryOverlay','gameEndOverlay'].forEach(id =>
-    document.getElementById(id).classList.add('hidden')
-  );
-  document.getElementById('spectateHUD').classList.add('hidden');
+  hideAllOverlays();
   showScreen('modeScreen');
 }
 
-// Click on canvas → cycle spectate target
+// Click on canvas → cycle through alive spectate targets
 canvas.addEventListener('click', () => {
   if (!isSpectating) return;
-  const alive = Object.values(players).filter(p => p.alive && !p.waiting);
+  const alive = Object.values(players).filter(p => p.alive && !p.waiting && p.id !== myId);
   if (!alive.length) return;
   const idx  = alive.findIndex(p => p.id === spectateId);
   spectateId = alive[(idx + 1) % alive.length].id;
@@ -406,18 +414,18 @@ canvas.addEventListener('click', () => {
 });
 
 // ─── Overlay button wiring ────────────────────────────────────────────────────
-document.getElementById('spectateBtn')   .addEventListener('click', enterSpectate);
-document.getElementById('deathMenuBtn')  .addEventListener('click', leaveToMenu);
+document.getElementById('spectateBtn')    .addEventListener('click', enterSpectate);
+document.getElementById('deathMenuBtn')   .addEventListener('click', leaveToMenu);
 document.getElementById('spectateMenuBtn').addEventListener('click', leaveToMenu);
-document.getElementById('victoryMenuBtn').addEventListener('click', leaveToMenu);
-document.getElementById('gameEndMenuBtn').addEventListener('click', leaveToMenu);
+document.getElementById('victoryMenuBtn') .addEventListener('click', leaveToMenu);
+document.getElementById('gameEndMenuBtn') .addEventListener('click', leaveToMenu);
 document.getElementById('replayBtn').addEventListener('click', () => {
-  socket.emit('leaveGame');
+  // Emit returnToMenu so server cleans up, then re-join same mode
+  socket.emit('returnToMenu');
   myId = null; players = {}; grid = null;
   isSpectating = false; spectateId = null;
   clearInterval(zoneIntervalId);
-  document.getElementById('victoryOverlay').classList.add('hidden');
-  document.getElementById('spectateHUD').classList.add('hidden');
+  hideAllOverlays();
   if (lastMode?.mode === 'solo') {
     socket.emit('join', { name: playerName, mode: 'solo', ranked: lastMode.ranked, color: lastMode.color });
   } else if (lastMode?.mode === 'team') {
@@ -431,12 +439,9 @@ document.getElementById('replayBtn').addEventListener('click', () => {
 
 // Kicked / banned by server
 socket.on('kicked', data => {
-  myId = null; players = {}; grid = null; isSpectating = false;
+  myId = null; players = {}; grid = null; isSpectating = false; spectateId = null;
   clearInterval(zoneIntervalId);
-  ['deathOverlay','victoryOverlay','gameEndOverlay'].forEach(id =>
-    document.getElementById(id).classList.add('hidden')
-  );
-  document.getElementById('spectateHUD').classList.add('hidden');
+  hideAllOverlays();
   showScreen('loginScreen');
   const until = data.until ? ` until ${new Date(data.until).toLocaleTimeString()}` : '';
   const msg   = data.banned
@@ -508,31 +513,40 @@ socket.on('tick', data => {
 socket.on('zoneUpdate', data => { zone = data.zone; startZoneCountdown(data.timeToShrink); });
 socket.on('playerJoined', p => { setTeamColor(p.team, p.color); players[p.id] = p; });
 socket.on('playerLeft',   d => { delete players[d.id]; });
-socket.on('died', data => {
-  // Description line
-  deathMsg.textContent = data.killedBy === 'zone'
-    ? 'Eliminated by the safe zone'
-    : `Eliminated by ${data.killedBy}`;
+// ── playerDied — server confirmed this client is dead (Battle Royale, no respawn)
+socket.on('playerDied', data => {
+  // data: { killer, eloChange, finalRank, totalPlayers, kills, ranked }
 
-  // ELO stat
+  // Stop any lingering input
+  isSpectating = false;
+  lastDir = 'right';
+
+  // Cause line
+  deathMsg.textContent = data.killer === 'zone'
+    ? 'Eliminé par la zone dangereuse'
+    : `Eliminé par ${data.killer}`;
+
+  // ELO delta
   const eloWrap = document.getElementById('deathEloWrap');
   const eloEl   = document.getElementById('deathEloChange');
   if (data.ranked && data.eloChange !== undefined) {
     const delta = data.eloChange;
-    eloEl.textContent  = delta >= 0 ? `+${delta}` : `${delta}`;
-    eloEl.className    = 'stat-val ' + (delta >= 0 ? 'pos' : 'neg');
+    eloEl.textContent = delta >= 0 ? `+${delta}` : `${delta}`;
+    eloEl.className   = 'stat-val ' + (delta >= 0 ? 'pos' : 'neg');
     eloWrap.style.display = '';
   } else {
     eloWrap.style.display = 'none';
   }
 
-  document.getElementById('deathRank').textContent  = `#${data.rank}/${data.totalPlayers}`;
+  document.getElementById('deathRank').textContent  = `#${data.finalRank} / ${data.totalPlayers}`;
   document.getElementById('deathKills').textContent = data.kills;
 
+  // Show death screen — never auto-dismiss, player must click SPECTATE or MENU
+  hideAllOverlays();           // clear any leftover overlay
   deathOverlay.classList.remove('hidden');
-  lastDir = 'right';
 });
 
+// ── gameOver — match has ended
 socket.on('gameOver', data => {
   clearInterval(zoneIntervalId);
   const wasSpectating = isSpectating;
@@ -540,28 +554,35 @@ socket.on('gameOver', data => {
   document.getElementById('spectateHUD').classList.add('hidden');
 
   if (data.won) {
+    // ── Victory screen ───────────────────────────────────────────────────────
     document.getElementById('victoryKills').textContent = data.kills;
     document.getElementById('victoryTerr').textContent  = data.territory || 0;
+
     const eloWrapV = document.getElementById('victoryEloWrap');
     const eloValV  = document.getElementById('victoryEloVal');
     if (isRanked) {
-      eloValV.textContent   = data.elo;
+      eloValV.textContent    = data.elo;
       eloWrapV.style.display = '';
     } else {
       eloWrapV.style.display = 'none';
     }
     const eloGained = data.elo - (players[myId]?.startElo ?? data.elo);
     document.getElementById('victoryMsg').textContent =
-      isRanked && eloGained > 0 ? `+${eloGained} ELO this match` : '';
+      isRanked && eloGained > 0 ? `+${eloGained} ELO ce match` : '';
+
     document.getElementById('deathOverlay').classList.add('hidden');
     document.getElementById('victoryOverlay').classList.remove('hidden');
+
   } else if (wasSpectating) {
+    // ── Game-end for spectators ──────────────────────────────────────────────
     const winner = Object.values(players).find(p => p.alive && !p.waiting);
     document.getElementById('gameEndMsg').textContent =
-      winner ? `${winner.name} wins the match!` : 'Match ended.';
+      winner ? `${esc(winner.name)} remporte la partie !` : 'Partie terminée.';
     document.getElementById('gameEndOverlay').classList.remove('hidden');
+
   }
-  // If the death screen is showing they can still press MENU
+  // If death screen is showing (player died then game ended before they clicked anything),
+  // keep it — they still have MENU and SPECTATE buttons available.
 });
 
 // ─── Toast ────────────────────────────────────────────────────────────────────

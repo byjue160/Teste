@@ -305,10 +305,14 @@ function captureTerritory(room, player) {
   player.trail = []; player.inTerritory = true;
 }
 
-// ─── Kill (no respawn — Battle Royale) ───────────────────────────────────────
+// ─── Kill — Battle Royale (no respawn ever) ───────────────────────────────────
 function killPlayer(room, player, killer) {
   if (!player.alive) return;
-  player.trail = []; player.alive = false;
+
+  // Mark dead immediately — nothing else in this codebase resets alive to true
+  player.trail      = [];
+  player.alive      = false;
+  player.spectating = true;   // server-side spectator flag
 
   const hasTeammate = Object.values(room.players).some(
     p => p.id !== player.id && p.team === player.team && p.alive
@@ -318,18 +322,18 @@ function killPlayer(room, player, killer) {
       if (room.grid[i] === player.team) { room.grid[i] = 0; room.dirtySet.add(i); }
   }
 
-  // Rank = number of players still alive after this death + 1
+  // Rank = surviving players after this death + 1
   const aliveAfter = Object.values(room.players).filter(p => p.alive && !p.waiting).length;
   const total      = Object.keys(room.players).length;
   player.finalRank = aliveAfter + 1;
 
   let eloChange = 0;
   if (room.isRanked) {
-    const vData  = getPlayerData(player.name);
+    const vData = getPlayerData(player.name);
     vData.games++;
-    eloChange    = -Math.min(20, vData.elo);
-    vData.elo    = Math.max(0, vData.elo - 20);
-    player.elo   = vData.elo;
+    eloChange   = -Math.min(20, vData.elo);
+    vData.elo   = Math.max(0, vData.elo - 20);
+    player.elo  = vData.elo;
     if (killer && killer.id !== player.id) {
       const kData  = getPlayerData(killer.name);
       kData.wins++;
@@ -343,16 +347,16 @@ function killPlayer(room, player, killer) {
     killer.kills = (killer.kills || 0) + 1;
   }
 
-  io.to(player.id).emit('died', {
-    killedBy: killer ? killer.name : 'zone',
-    elo: player.elo, eloChange,
-    kills: player.kills || 0,
-    rank: player.finalRank,
+  // "playerDied" — explicit BR death event (never confused with old "died")
+  io.to(player.id).emit('playerDied', {
+    killer:       killer ? killer.name : 'zone',
+    eloChange,
+    finalRank:    player.finalRank,
     totalPlayers: total,
-    ranked: room.isRanked,
+    kills:        player.kills || 0,
+    ranked:       room.isRanked,
   });
 
-  // Check if the match is now over
   checkWinCondition(room);
 }
 
@@ -487,7 +491,7 @@ function startGameFromLobby(room) {
       id: lp.id, name: lp.name,
       team: lp.team,
       color: TEAM_DEF[lp.team].color,
-      elo: startEloLp, startElo: startEloLp, kills: 0, finalRank: 0,
+      elo: startEloLp, startElo: startEloLp, kills: 0, finalRank: 0, spectating: false,
       x:0, y:0, direction:'right', nextDir:'right',
       trail:[], alive:false, waiting:false, inTerritory:true, spawnedAt:0,
       roomId: room.id,
@@ -563,7 +567,7 @@ io.on('connection', socket => {
     const startElo  = getPlayerData(safeName).elo;
     const player = {
       id: socket.id, name: safeName, team, color: safeColor,
-      elo: startElo, startElo, kills: 0, finalRank: 0,
+      elo: startElo, startElo, kills: 0, finalRank: 0, spectating: false,
       x:0, y:0, direction:'right', nextDir:'right',
       trail:[], alive:false, waiting:false, inTerritory:true, spawnedAt:0, roomId,
     };
@@ -650,6 +654,36 @@ io.on('connection', socket => {
     if (room) {
       const player = room.players[socket.id];
       if (player) {
+        if (player.alive && !room.gameOver) killPlayer(room, player, null);
+        else if (room.isRanked) { getPlayerData(player.name).elo = player.elo; saveEloData(); }
+        const hasTeammate = Object.values(room.players).some(
+          p => p.id !== socket.id && p.team === player.team && p.alive
+        );
+        if (!hasTeammate) {
+          for (let i = 0; i < room.grid.length; i++)
+            if (room.grid[i] === player.team) { room.grid[i] = 0; room.dirtySet.add(i); }
+        }
+        delete room.players[socket.id];
+        io.to(room.id).emit('playerLeft', { id: socket.id });
+      }
+      if (room.lobby?.players[socket.id]) {
+        delete room.lobby.players[socket.id];
+        broadcastLobbyUpdate(room);
+      }
+      socket.leave(room.id);
+    }
+    playerRoomId = null; playerPhase = null;
+  });
+
+  // ── Return to menu (dead / spectating player navigates back) ─────────────
+  // Identical cleanup logic to leaveGame — kept as a distinct event name for clarity
+  on('returnToMenu', () => {
+    if (!playerRoomId) return;
+    const room = rooms.get(playerRoomId);
+    if (room) {
+      const player = room.players[socket.id];
+      if (player) {
+        // Player should already be dead; if somehow alive (e.g. rage-quit), kill first
         if (player.alive && !room.gameOver) killPlayer(room, player, null);
         else if (room.isRanked) { getPlayerData(player.name).elo = player.elo; saveEloData(); }
         const hasTeammate = Object.values(room.players).some(
