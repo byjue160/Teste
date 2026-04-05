@@ -1,7 +1,32 @@
 // ─── Zone.io — client ─────────────────────────────────────────────────────────
 'use strict';
 
+// ─── DOM integrity monitor ────────────────────────────────────────────────────
+(function() {
+  const _obs = new MutationObserver(mutations => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        const tag = node.tagName && node.tagName.toUpperCase();
+        if (tag === 'SCRIPT' || tag === 'IFRAME' || tag === 'OBJECT' || tag === 'EMBED') {
+          // Only flag dynamically-injected elements (not our own game script)
+          if (!node.dataset.zoneInternal) {
+            console.warn('[Security] Suspicious element injected:', tag, node.src || node.innerHTML.slice(0, 40));
+            try {
+              // Report to server without crashing the game
+              const _s = window.__zoneSocket;
+              if (_s && _s.connected) _s.emit('securityAlert', { type: 'dom', detail: tag });
+            } catch(_) {}
+          }
+        }
+      }
+    }
+  });
+  _obs.observe(document.documentElement, { childList: true, subtree: true });
+})();
+
 const socket = io();
+window.__zoneSocket = socket; // referenced by DOM integrity monitor
 
 // ─── Solo colour palette (must match server whitelist) ────────────────────────
 const SOLO_COLORS = [
@@ -403,6 +428,33 @@ document.getElementById('replayBtn').addEventListener('click', () => {
 });
 
 // ─── Socket events ────────────────────────────────────────────────────────────
+
+// Kicked / banned by server
+socket.on('kicked', data => {
+  myId = null; players = {}; grid = null; isSpectating = false;
+  clearInterval(zoneIntervalId);
+  ['deathOverlay','victoryOverlay','gameEndOverlay'].forEach(id =>
+    document.getElementById(id).classList.add('hidden')
+  );
+  document.getElementById('spectateHUD').classList.add('hidden');
+  showScreen('loginScreen');
+  const until = data.until ? ` until ${new Date(data.until).toLocaleTimeString()}` : '';
+  const msg   = data.banned
+    ? `🚫 You have been temporarily banned${until}.\nReason: ${data.reason}`
+    : `⚠️ You were disconnected.\nReason: ${data.reason}`;
+  // Use a non-blocking toast instead of alert
+  const el = document.createElement('div');
+  el.textContent = msg.replace('\n', ' — ');
+  Object.assign(el.style, {
+    position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)',
+    background: data.banned ? '#c0392b' : '#e67e22',
+    color:'#fff', padding:'14px 24px', borderRadius:'10px', fontSize:'14px',
+    fontWeight:'700', zIndex:'9999', maxWidth:'90vw', textAlign:'center',
+    boxShadow:'0 4px 20px rgba(0,0,0,0.5)',
+  });
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+});
 
 // Solo game init
 socket.on('init', data => {
