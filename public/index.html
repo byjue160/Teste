@@ -21,14 +21,23 @@
       <div class="lb-link-row">
         <button id="lbBtn" class="lb-link-btn">🏆 Global Leaderboard</button>
       </div>
-      <div class="howto">
+
+      <!-- Keyboard layout toggle -->
+      <div class="kb-toggle-section">
+        <p class="kb-toggle-label">Keyboard layout</p>
+        <div class="kb-toggle">
+          <button id="kbAzerty" class="kb-btn" data-layout="azerty">🇫🇷 AZERTY</button>
+          <button id="kbQwerty" class="kb-btn" data-layout="qwerty">🇺🇸 QWERTY</button>
+        </div>
+      </div>
+
+      <div class="howto kb-instructions">
         <h3>How to Play</h3>
         <ul>
-          <li><kbd>W A S D</kbd> or <kbd>↑ ← ↓ →</kbd> to move</li>
+          <li id="howtoMove"><kbd>W A S D</kbd> or <kbd>↑ ← ↓ →</kbd> to move</li>
           <li>Leave your territory to draw a <em>trail</em></li>
           <li>Return home to <em>capture</em> the enclosed area</li>
           <li>Cut an enemy's trail to <em>eliminate</em> them</li>
-          <li>Stay inside the shrinking safe zone</li>
         </ul>
       </div>
     </div>
@@ -271,13 +280,17 @@
       </div>
     </div>
 
-    <!-- Mobile D-pad -->
-    <div class="dpad">
-      <button class="dp-btn dp-up"    data-dir="up">▲</button>
-      <button class="dp-btn dp-left"  data-dir="left">◄</button>
-      <button class="dp-btn dp-down"  data-dir="down">▼</button>
-      <button class="dp-btn dp-right" data-dir="right">►</button>
+    <!-- Mobile D-pad (shown only on touch devices) -->
+    <div id="dpad" class="dpad" style="display:none">
+      <button class="dp-btn dp-up"    data-dir="up"    aria-label="Up">▲</button>
+      <button class="dp-btn dp-left"  data-dir="left"  aria-label="Left">◄</button>
+      <div class="dp-center"></div>
+      <button class="dp-btn dp-right" data-dir="right" aria-label="Right">►</button>
+      <button class="dp-btn dp-down"  data-dir="down"  aria-label="Down">▼</button>
     </div>
+
+    <!-- Current direction indicator (bottom-left) -->
+    <div id="inputIndicator" class="input-indicator hidden"></div>
   </div>
 
   <script src="/socket.io/socket.io.js"></script>
