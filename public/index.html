@@ -8,57 +8,187 @@
 </head>
 <body>
 
-  <!-- ── Login Screen ─────────────────────────────────────────────────────── -->
+  <!-- ══ Screen 1: Login ════════════════════════════════════════════════════ -->
   <div id="loginScreen" class="screen active">
     <div class="login-box">
       <h1 class="logo">ZONE<span>.io</span></h1>
       <p class="tagline">Territory · Battle Royale · 2v2</p>
-
-      <div class="team-strip">
-        <span class="tbadge t1">RED</span>
-        <span class="tbadge t2">BLUE</span>
-        <span class="tbadge t3">GREEN</span>
-        <span class="tbadge t4">GOLD</span>
-      </div>
-
       <div class="input-row">
         <input id="nameInput" type="text" maxlength="15"
                placeholder="Your name…" autocomplete="off" spellcheck="false">
-        <button id="playBtn">PLAY</button>
+        <button id="nextBtn">NEXT →</button>
       </div>
-
+      <div class="lb-link-row">
+        <button id="lbBtn" class="lb-link-btn">🏆 Global Leaderboard</button>
+      </div>
       <div class="howto">
         <h3>How to Play</h3>
         <ul>
           <li><kbd>W A S D</kbd> or <kbd>↑ ← ↓ →</kbd> to move</li>
-          <li>Venture outside your territory to draw a <em>trail</em></li>
+          <li>Leave your territory to draw a <em>trail</em></li>
           <li>Return home to <em>capture</em> the enclosed area</li>
           <li>Cut an enemy's trail to <em>eliminate</em> them</li>
           <li>Stay inside the shrinking safe zone</li>
-          <li>Teammates share territory — protect each other!</li>
-          <li>Kill <span class="pos">+25 ELO</span> · Die <span class="neg">−20 ELO</span></li>
         </ul>
       </div>
     </div>
   </div>
 
-  <!-- ── Game Screen ──────────────────────────────────────────────────────── -->
+  <!-- ══ Screen 2: Mode Selection ══════════════════════════════════════════ -->
+  <div id="modeScreen" class="screen">
+    <div class="mode-box">
+      <div class="mode-header">
+        <button id="backBtn" class="back-btn">← Back</button>
+        <h2 class="mode-title">Choose Your Mode</h2>
+        <p class="mode-greeting" id="modeGreeting">Hello, Player!</p>
+      </div>
+
+      <!-- ── Solo colour picker ───────────────────────────────────────────── -->
+      <div class="color-picker-section" id="colorPickerSection">
+        <p class="color-picker-label">Your colour <span class="color-picker-note">(Solo modes)</span></p>
+        <div class="color-palette" id="colorPalette">
+          <!-- swatches injected by game.js -->
+        </div>
+      </div>
+
+      <!-- ── 4 mode cards ─────────────────────────────────────────────────── -->
+      <div class="mode-grid">
+
+        <button class="mode-card" data-mode="solo" data-ranked="true">
+          <div class="mode-card-glow glow-ranked"></div>
+          <div class="mode-card-top">
+            <span class="mode-icon">⚔️</span>
+            <span class="mode-badge badge-ranked">RANKED</span>
+          </div>
+          <div class="mode-card-name">Solo Ranked</div>
+          <div class="mode-card-desc">Every man for himself<br>
+            <span class="elo-pos">+25 ELO</span> per kill · <span class="elo-neg">−20</span> per death
+          </div>
+          <div class="mode-card-online" id="cnt-solo-ranked">— online</div>
+        </button>
+
+        <button class="mode-card" data-mode="solo" data-ranked="false">
+          <div class="mode-card-glow glow-chill"></div>
+          <div class="mode-card-top">
+            <span class="mode-icon">🎮</span>
+            <span class="mode-badge badge-chill">CHILL</span>
+          </div>
+          <div class="mode-card-name">Solo Chill</div>
+          <div class="mode-card-desc">Play for fun<br>
+            <span class="no-elo">No ELO · No pressure</span>
+          </div>
+          <div class="mode-card-online" id="cnt-solo-chill">— online</div>
+        </button>
+
+        <button class="mode-card" data-mode="team" data-ranked="true">
+          <div class="mode-card-glow glow-ranked"></div>
+          <div class="mode-card-top">
+            <span class="mode-icon">🛡️</span>
+            <span class="mode-badge badge-ranked">RANKED</span>
+          </div>
+          <div class="mode-card-name">Team 2v2 Ranked</div>
+          <div class="mode-card-desc">Pick your team in lobby<br>
+            <span class="elo-pos">+25 ELO</span> per kill · <span class="elo-neg">−20</span> per death
+          </div>
+          <div class="mode-card-online" id="cnt-team-ranked">— online</div>
+        </button>
+
+        <button class="mode-card" data-mode="team" data-ranked="false">
+          <div class="mode-card-glow glow-chill"></div>
+          <div class="mode-card-top">
+            <span class="mode-icon">🤝</span>
+            <span class="mode-badge badge-chill">CHILL</span>
+          </div>
+          <div class="mode-card-name">Team 2v2 Chill</div>
+          <div class="mode-card-desc">Co-op for fun<br>
+            <span class="no-elo">No ELO · Just vibes</span>
+          </div>
+          <div class="mode-card-online" id="cnt-team-chill">— online</div>
+        </button>
+
+      </div><!-- .mode-grid -->
+    </div>
+  </div>
+
+  <!-- ══ Screen 3: Team Lobby ═══════════════════════════════════════════════ -->
+  <div id="lobbyScreen" class="screen">
+    <div class="lobby-wrap">
+      <div class="lobby-header">
+        <button id="lobbyBackBtn" class="back-btn">← Back</button>
+        <h2 class="lobby-title" id="lobbyTitle">Team Lobby</h2>
+        <p class="lobby-subtitle" id="lobbySubtitle">Pick your team, then click READY</p>
+      </div>
+
+      <!-- 4 team columns -->
+      <div class="lobby-teams">
+
+        <div class="lobby-team-col" id="lobbyTeamCol1">
+          <div class="lobby-team-header lth-red">
+            <span class="lobby-team-dot" style="background:#e74c3c"></span>
+            Red
+            <span class="lobby-team-count" id="lobbyCount1">0/2</span>
+          </div>
+          <ul class="lobby-members" id="lobbyMembers1"></ul>
+          <button class="lobby-join-btn" data-team="1">Join Red</button>
+        </div>
+
+        <div class="lobby-team-col" id="lobbyTeamCol2">
+          <div class="lobby-team-header lth-blue">
+            <span class="lobby-team-dot" style="background:#3498db"></span>
+            Blue
+            <span class="lobby-team-count" id="lobbyCount2">0/2</span>
+          </div>
+          <ul class="lobby-members" id="lobbyMembers2"></ul>
+          <button class="lobby-join-btn" data-team="2">Join Blue</button>
+        </div>
+
+        <div class="lobby-team-col" id="lobbyTeamCol3">
+          <div class="lobby-team-header lth-green">
+            <span class="lobby-team-dot" style="background:#2ecc71"></span>
+            Green
+            <span class="lobby-team-count" id="lobbyCount3">0/2</span>
+          </div>
+          <ul class="lobby-members" id="lobbyMembers3"></ul>
+          <button class="lobby-join-btn" data-team="3">Join Green</button>
+        </div>
+
+        <div class="lobby-team-col" id="lobbyTeamCol4">
+          <div class="lobby-team-header lth-gold">
+            <span class="lobby-team-dot" style="background:#f1c40f"></span>
+            Gold
+            <span class="lobby-team-count" id="lobbyCount4">0/2</span>
+          </div>
+          <ul class="lobby-members" id="lobbyMembers4"></ul>
+          <button class="lobby-join-btn" data-team="4">Join Gold</button>
+        </div>
+
+      </div><!-- .lobby-teams -->
+
+      <div class="lobby-footer">
+        <div class="lobby-status" id="lobbyStatus">Select a team to continue</div>
+        <button id="readyBtn" class="ready-btn" disabled>READY</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Screen 4: Game ═════════════════════════════════════════════════════ -->
   <div id="gameScreen" class="screen">
     <canvas id="gameCanvas"></canvas>
 
-    <!-- Top-left HUD -->
+    <!-- HUD top-left -->
     <div class="hud hud-left">
       <div class="hud-pill elo-pill" id="eloDisplay">ELO: 1000</div>
-      <div class="hud-pill team-pill" id="teamDisplay">Team: —</div>
+      <div class="hud-pill team-pill" id="teamDisplay">—</div>
+    </div>
+    <div class="mode-hud-badge" id="modeBadge"></div>
+
+    <!-- Zone timer top-center -->
+    <div class="zone-banner">
+      <span class="zone-dot">⬤</span>
+      Safe zone closes in <strong id="zoneTimerVal">30</strong>s
     </div>
 
-    <!-- Top-center zone timer -->
-    <div class="zone-banner" id="zoneBanner">
-      <span class="zone-icon">⬤</span>
-      <span id="zoneTimerLabel">Safe zone closes in <strong id="zoneTimerVal">30</strong>s</span>
-    </div>
-
-    <!-- Leaderboard (right) -->
+    <!-- Leaderboard top-right -->
     <div class="leaderboard" id="leaderboard">
       <div class="lb-head">Leaderboard</div>
       <div id="lbRows"></div>
@@ -75,8 +205,8 @@
       </div>
     </div>
 
-    <!-- Mobile d-pad -->
-    <div class="dpad" id="dpad">
+    <!-- Mobile D-pad -->
+    <div class="dpad">
       <button class="dp-btn dp-up"    data-dir="up">▲</button>
       <button class="dp-btn dp-left"  data-dir="left">◄</button>
       <button class="dp-btn dp-down"  data-dir="down">▼</button>
