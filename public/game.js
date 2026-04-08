@@ -440,14 +440,19 @@ window.addEventListener('keydown', e => {
 
   const dir = keyToDir(e.key);
   if (!dir) return;
-  // last-key-wins: only send if this key is not already the active direction
-  const alreadyHeld = keysHeld[e.key];
   keysHeld[e.key] = true;
-  if (!alreadyHeld) sendDir(dir);
+  sendDir(dir); // sendDir gère le dédoublonnage via lastDir
 }, { passive: false });
 
 window.addEventListener('keyup', e => {
   keysHeld[e.key] = false;
+  // Recalculer si une autre touche directionnelle est encore tenue
+  for (const heldKey of Object.keys(keysHeld)) {
+    if (keysHeld[heldKey]) {
+      const dir = keyToDir(heldKey);
+      if (dir) { sendDir(dir); return; }
+    }
+  }
 }, { passive: false });
 
 // Reset held keys when window loses focus to prevent stuck keys
