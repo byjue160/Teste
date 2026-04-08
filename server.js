@@ -67,7 +67,7 @@ const TEAM_DEF = {
 // Valid solo colours (whitelisted hex values clients may send)
 const SOLO_COLORS = new Set([
   '#e74c3c','#3498db','#2ecc71','#f1c40f','#9b59b6','#e67e22',
-  '#e91e63','#00bcd4','#ecf0f1','#636e72','#a8e63d','#1abc9c',
+  '#e91e63','#00bcd4','#ecf0f1','#636e72','#a8e63d','#1abc9c','#ff4500',
 ]);
 const SOLO_COLOR_DEFAULT = '#e74c3c';
 
@@ -123,7 +123,7 @@ const BOT_NAMES = [
 
 const SOLO_COLORS_ARR = [
   '#e74c3c','#3498db','#2ecc71','#f1c40f','#9b59b6','#e67e22',
-  '#e91e63','#00bcd4','#ecf0f1','#636e72','#a8e63d','#1abc9c',
+  '#e91e63','#00bcd4','#ecf0f1','#636e72','#a8e63d','#1abc9c','#ff4500',
 ];
 let _botUid = 0;
 

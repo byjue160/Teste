@@ -68,6 +68,7 @@ const SOLO_COLORS = [
   { hex: '#636e72', name: 'Noir'       },
   { hex: '#a8e63d', name: 'Lime'       },
   { hex: '#1abc9c', name: 'Turquoise'  },
+  { hex: '#ff4500', name: 'Lava'       },
 ];
 let selectedColor = SOLO_COLORS[0].hex; // default: Rouge
 
