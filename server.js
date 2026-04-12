@@ -956,9 +956,9 @@ io.on('connection', socket => {
   on('direction', (dir) => {
     if (typeof dir !== 'string') return;
     const valid = ['up','down','left','right'];
-    if (!valid.includes(dir) || !playerRoomId || playerPhase !== 'game') return;
+    if (!valid.includes(dir) || !playerRoomId) return;
     const room = rooms.get(playerRoomId);
-    if (!room || room.gameOver) return;
+    if (!room || room.gameOver || room.phase !== 'game') return;
     const player = room.players[socket.id];
     if (player?.alive && !player.waiting) player.nextDir = dir;
   });
